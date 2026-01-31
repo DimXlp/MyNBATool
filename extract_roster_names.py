@@ -35,11 +35,10 @@ RATING_COL_ROI: Tuple[int, int, int, int] = (563, 495, 58, 469)  # RATING column
 IN_COL_ROI = (620, 495, 50, 469)  # IN column (starts after RATING)
 
 # ROIs for Standings screen - (x, y, width, height)
-# Based on 1920x1061 standings screenshot
-# Row 2 (New York Knicks highlighted) starts around y=398
-STANDINGS_RANK_COL_ROI: Tuple[int, int, int, int] = (85, 398, 35, 290)  # # (rank) column
-STANDINGS_TEAM_COL_ROI: Tuple[int, int, int, int] = (240, 398, 185, 290)  # TEAM name column (skip logo)
-STANDINGS_WL_COL_ROI: Tuple[int, int, int, int] = (390, 398, 55, 290)  # W-L column
+# Calibrated from user measurements
+STANDINGS_RANK_COL_ROI: Tuple[int, int, int, int] = (77, 443, 75, 469)  # # (rank) column
+STANDINGS_TEAM_COL_ROI: Tuple[int, int, int, int] = (221, 443, 291, 469)  # TEAM name column (skip logo)
+STANDINGS_WL_COL_ROI: Tuple[int, int, int, int] = (506, 443, 108, 469)  # W-L column
 
 # Trims inside NAME column crop to reduce icon interference.
 LEFT_TRIM_RATIO = 0.02
@@ -571,17 +570,40 @@ def _parse_standings_screen(img_bgr: np.ndarray, fname: str, args) -> List[Dict[
     
     standings_teams = []
     
-    # Detect conference from screen - look for "Eastern" button/tab text
-    # The conference tabs are around y=312, with Eastern around x=145 and Western around x=300
-    conference_roi = img_bgr[305:335, 100:260].copy()  # Eastern button area
-    conference_text = pytesseract.image_to_string(conference_roi, config="--psm 7").strip().upper()
-    conference = "Eastern" if "EAST" in conference_text else "Western" if "WEST" in conference_text else None
+    # Detect conference - try OCR first for the screenshot
+    # The word "Western" or "Eastern" appears around y=285-310
+    conference_roi = img_bgr[285:310, 450:570].copy()
+    # Enlarge for better OCR
+    conference_roi = cv2.resize(conference_roi, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    conference_gray = cv2.cvtColor(conference_roi, cv2.COLOR_BGR2GRAY)
+    _, conference_bw = cv2.threshold(conference_gray, 127, 255, cv2.THRESH_BINARY)
+    # Invert if needed (white text on black background)
+    if conference_bw.mean() < 127:
+        conference_bw = cv2.bitwise_not(conference_bw)
+    conference_text = pytesseract.image_to_string(conference_bw, config="--psm 7").strip().upper()
     
-    # If not found, try Western region
-    if not conference:
-        conference_roi = img_bgr[305:335, 260:420].copy()
-        conference_text = pytesseract.image_to_string(conference_roi, config="--psm 7").strip().upper()
-        conference = "Western" if "WEST" in conference_text else "Eastern"
+    if args.debug:
+        cv2.imwrite(str(DEBUG_DIR / f"{Path(fname).stem}__conference_roi.png"), conference_bw)
+        print(f"  Conference OCR: '{conference_text}'")
+    
+    screenshot_conference = "Western" if "WEST" in conference_text else "Eastern" if "EAST" in conference_text else None
+    
+    # Team-based conference lookup (fallback)
+    western_teams_set = {
+        "dallas mavericks", "los angeles lakers", "oklahoma city thunder", 
+        "portland trail blazers", "new orleans pelicans", "san antonio spurs",
+        "utah jazz", "sacramento kings", "minnesota timberwolves", 
+        "los angeles clippers", "memphis grizzlies", "phoenix suns",
+        "golden state warriors", "houston rockets", "denver nuggets"
+    }
+    
+    # Try to extract power rank from the team detail card (top area)
+    # Power Rank appears around y=240-260, x=550-650
+    power_rank_roi = img_bgr[240:260, 550:650].copy()
+    power_rank_text = pytesseract.image_to_string(power_rank_roi, config="--psm 7 -c tessedit_char_whitelist=0123456789thsrdnTPowerRak:").strip()
+    # Extract just the number
+    power_rank_match = re.search(r'(\d{1,2})(?:st|nd|rd|th)?', power_rank_text)
+    power_rank = int(power_rank_match.group(1)) if power_rank_match and 1 <= int(power_rank_match.group(1)) <= 30 else None
     
     # Crop the columns
     rankcol = _crop_roi_bgr(img_bgr, STANDINGS_RANK_COL_ROI)
@@ -617,9 +639,16 @@ def _parse_standings_screen(img_bgr: np.ndarray, fname: str, args) -> List[Dict[
         if not team_name or team_name.upper() in ["TEAM", "NAME"]:
             continue
         
-        # Extract rank
+        # Extract rank (simple 1-2 digit number, 1-15 typically)
         rank_line = rankcol[y0:y1, :].copy()
-        rank_val, _ = _ocr_int_config(rank_line, "")
+        rank_gray = cv2.cvtColor(rank_line, cv2.COLOR_BGR2GRAY)
+        rank_bw = cv2.threshold(rank_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        if rank_bw.mean() < 127:
+            rank_bw = cv2.bitwise_not(rank_bw)
+        rank_bw = cv2.resize(rank_bw, None, fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC)
+        rank_bw = cv2.copyMakeBorder(rank_bw, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=255)
+        rank_text = pytesseract.image_to_string(rank_bw, config="--psm 7 -c tessedit_char_whitelist=0123456789").strip()
+        rank_val = int(rank_text) if rank_text.isdigit() and 1 <= int(rank_text) <= 30 else None
         
         # Extract W-L record
         wl_line = wlcol[y0:y1, :].copy()
@@ -639,10 +668,22 @@ def _parse_standings_screen(img_bgr: np.ndarray, fname: str, args) -> List[Dict[
         elif not wl_text or wl_text == "-":
             wl_text = None
         
+        # Use team name to determine conference (always check, don't rely solely on OCR)
+        team_check = team_name.lower()
+        if team_check in western_teams_set:
+            conference = "Western"
+        else:
+            conference = "Eastern"
+        
+        # Use screenshot conference if we detected it via OCR
+        if screenshot_conference:
+            conference = screenshot_conference
+        
         if team_name and (rank_val or wl_text):
             standings_teams.append({
                 "conference": conference,
                 "rank": rank_val,
+                "power_rank": power_rank,
                 "team": team_name,
                 "record": wl_text if wl_text else None,
                 "source": fname
@@ -693,6 +734,8 @@ def main() -> None:
         return int(p.get("pos") is not None) + int(p.get("age") is not None) + int(p.get("ovr") is not None)
 
     # Process standings screenshots first
+    unique_standings: Dict[str, Dict[str, Any]] = {}
+    
     for entry in standings_entries:
         fname = entry.get("file")
         if not fname:
@@ -709,8 +752,89 @@ def main() -> None:
             continue
         
         standings_data = _parse_standings_screen(img_bgr, fname, args)
-        all_standings.extend(standings_data)
+        
+        # Merge duplicates from overlapping screenshots
+        for team in standings_data:
+            key = team["team"].lower()
+            existing = unique_standings.get(key)
+            
+            if existing is None:
+                # New team, add it
+                unique_standings[key] = team
+            else:
+                # Duplicate team - merge by keeping best data for each field
+                if args.debug:
+                    print(f"  >> Processing {team['team']} again from {fname}")
+                
+                merged = existing.copy()
+                
+                # Update each field only if new value is better (non-null when existing is null)
+                if team.get("rank") is not None and existing.get("rank") is None:
+                    merged["rank"] = team["rank"]
+                    if args.debug:
+                        print(f"     {team['team']}: Added missing rank={team['rank']} from {fname}")
+                
+                if team.get("power_rank") is not None and existing.get("power_rank") is None:
+                    merged["power_rank"] = team["power_rank"]
+                    if args.debug:
+                        print(f"     {team['team']}: Added missing power_rank={team['power_rank']} from {fname}")
+                
+                if team.get("record") is not None and existing.get("record") is None:
+                    merged["record"] = team["record"]
+                    if args.debug:
+                        print(f"     {team['team']}: Added missing record={team['record']} from {fname}")
+                
+                # Update source if we got more complete data
+                new_complete = int(team.get("rank") is not None) + int(team.get("record") is not None)
+                old_complete = int(existing.get("rank") is not None) + int(existing.get("record") is not None)
+                if new_complete > old_complete:
+                    merged["source"] = fname
+                
+                unique_standings[key] = merged
+        
         processed += 1
+    
+    # Convert to list and group by conference
+    all_standings_list = list(unique_standings.values())
+    
+    # Separate by conference and sort each
+    eastern_teams = sorted(
+        [t for t in all_standings_list if t["conference"] == "Eastern"],
+        key=lambda t: (t["rank"] is None, t["rank"] if t["rank"] is not None else 999)
+    )
+    western_teams = sorted(
+        [t for t in all_standings_list if t["conference"] == "Western"],
+        key=lambda t: (t["rank"] is None, t["rank"] if t["rank"] is not None else 999)
+    )
+    
+    # Combine with Eastern first, then Western
+    all_standings = eastern_teams + western_teams
+    
+    # Infer missing ranks from sorted order
+    # Teams are always sorted by rank, so we can fill gaps
+    for i, team in enumerate(all_standings):
+        if team["rank"] is None:
+            # Try to infer from neighbors
+            prev_rank = all_standings[i-1]["rank"] if i > 0 else None
+            next_rank = all_standings[i+1]["rank"] if i < len(all_standings) - 1 else None
+            
+            if prev_rank is not None and next_rank is not None:
+                # Between two known ranks
+                expected = prev_rank + 1
+                if expected == next_rank:
+                    team["rank"] = expected
+                    if args.debug:
+                        print(f"  Inferred rank {expected} for {team['team']} (between {prev_rank} and {next_rank})")
+            elif prev_rank is not None:
+                # After a known rank, assume sequential
+                team["rank"] = prev_rank + 1
+                if args.debug:
+                    print(f"  Inferred rank {prev_rank + 1} for {team['team']} (after {prev_rank})")
+            elif next_rank is not None:
+                # Before a known rank, assume sequential
+                team["rank"] = next_rank - 1
+                if args.debug:
+                    print(f"  Inferred rank {next_rank - 1} for {team['team']} (before {next_rank})")
     
     # Process roster screenshots
     for entry in roster_entries:
@@ -876,7 +1000,9 @@ def main() -> None:
             json.dumps(all_standings, indent=2),
             encoding="utf-8"
         )
-        print(f"Standings teams extracted: {len(all_standings)}")
+        eastern_count = len([t for t in all_standings if t["conference"] == "Eastern"])
+        western_count = len([t for t in all_standings if t["conference"] == "Western"])
+        print(f"Standings teams extracted: {len(all_standings)} (Eastern: {eastern_count}, Western: {western_count})")
         print(f"Saved: {OUTPUT_DIR / 'standings.json'}")
 
     print(f"Total screenshots processed: {processed}")
