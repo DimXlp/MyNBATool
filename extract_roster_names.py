@@ -429,8 +429,13 @@ def _ocr_int_config(line_bgr: np.ndarray, debug_name: str = "") -> Tuple[Optiona
         m = re.search(r"\d{1,3}", text)
         if m:
             num = int(m.group(0))
-            if (18 <= num <= 45) or (60 <= num <= 99):
+            # For OVR: Accept 10-19 temporarily (will be fixed later to 70-79)
+            if "OVR" in debug_name and 10 <= num <= 99:
                 results.append((num, 60.0))
+            elif "AGE" in debug_name and 18 <= num <= 45:
+                results.append((num, 60.0))
+            elif "AGE" not in debug_name and "OVR" not in debug_name and ((18 <= num <= 45) or (60 <= num <= 99)):
+                results.append((num, 60.0))  # Fallback for unknown type
             elif len(m.group(0)) == 1:  # Single digit - might be partial
                 partial_digits.append(num)
     except Exception as e:
@@ -444,8 +449,13 @@ def _ocr_int_config(line_bgr: np.ndarray, debug_name: str = "") -> Tuple[Optiona
         m = re.search(r"\d{1,3}", text)
         if m:
             num = int(m.group(0))
-            if (18 <= num <= 45) or (60 <= num <= 99):
+            # For OVR: Accept 10-19 temporarily (will be fixed later to 70-79)
+            if "OVR" in debug_name and 10 <= num <= 99:
                 results.append((num, 60.0))
+            elif "AGE" in debug_name and 18 <= num <= 45:
+                results.append((num, 60.0))
+            elif "AGE" not in debug_name and "OVR" not in debug_name and ((18 <= num <= 45) or (60 <= num <= 99)):
+                results.append((num, 60.0))  # Fallback for unknown type
             elif len(m.group(0)) == 1:
                 partial_digits.append(num)
     except Exception as e:
@@ -475,7 +485,16 @@ def _ocr_int_config(line_bgr: np.ndarray, debug_name: str = "") -> Tuple[Optiona
                 m = re.search(r"\d{1,3}", text)
                 if m:
                     num = int(m.group(0))
-                    if (18 <= num <= 45) or (60 <= num <= 99):
+                    # For OVR: Accept 10-19 temporarily (will be fixed later to 70-79)
+                    is_valid = False
+                    if "OVR" in debug_name and 10 <= num <= 99:
+                        is_valid = True
+                    elif "AGE" in debug_name and 18 <= num <= 45:
+                        is_valid = True
+                    elif "AGE" not in debug_name and "OVR" not in debug_name and ((18 <= num <= 45) or (60 <= num <= 99)):
+                        is_valid = True  # Fallback for unknown type
+                    
+                    if is_valid:
                         # Try to get confidence
                         data = pytesseract.image_to_data(img, config=NUM_TESS_CONFIG,
                                                          output_type=pytesseract.Output.DICT)
@@ -488,19 +507,42 @@ def _ocr_int_config(line_bgr: np.ndarray, debug_name: str = "") -> Tuple[Optiona
                 inv_str = "_inv" if invert_idx == 1 else ""
                 all_attempts.append(f"{method_name}{inv_str}: ERROR {e}")
     
+    # Domain knowledge: Fix common OCR errors based on valid ranges
+    # NBA 2K26 ratings: 60-99 (mostly 70-99), Ages: 18-45 (mostly 20-40)
+    
+    # SMART FIX: If rating reads as 10-19, it's missing the leading '7' → convert to 70-79
+    if "OVR" in debug_name and results:
+        fixed_results = []
+        for num, conf in results:
+            if 10 <= num <= 19:
+                # OCR read "18" but it's actually "78", "19" → "79", etc.
+                corrected = 70 + (num % 10)
+                fixed_results.append((corrected, conf * 0.9))  # Slightly lower confidence
+                if debug_name:
+                    print(f"  Fixed {debug_name}: OCR read '{num}' -> corrected to '{corrected}'")
+            else:
+                fixed_results.append((num, conf))
+        results = fixed_results
+    
     # If we got no valid results but have partial digits, try to construct valid numbers
     if not results and partial_digits:
-        # For AGE: common pattern is 2X (20-29) or 3X (30-39)
-        # For OVR: common pattern is 7X (70-79) or 8X (80-89) or 9X (90-99)
+        # For AGE: common pattern is 2X (20-29), 3X (30-39), also 18-19
+        # For OVR: common pattern is 7X (70-79), 8X (80-89), 9X (90-99)
         for digit in set(partial_digits):  # Remove duplicates
             if "AGE" in debug_name:
-                # Try 2X and 3X for ages
-                for tens in [2, 3]:
-                    candidate = tens * 10 + digit
-                    if 20 <= candidate <= 39:
-                        results.append((candidate, 40.0))  # Lower confidence
+                # Special case: single digit 8 or 9 could be 18, 19, 28, 29, 38, 39
+                if digit in [8, 9]:
+                    for age in [10 + digit, 20 + digit, 30 + digit]:
+                        if 18 <= age <= 45:
+                            results.append((age, 35.0))
+                else:
+                    # Try 2X and 3X for other digits
+                    for tens in [2, 3]:
+                        candidate = tens * 10 + digit
+                        if 20 <= candidate <= 39:
+                            results.append((candidate, 40.0))  # Lower confidence
             elif "OVR" in debug_name:
-                # Try 7X, 8X, 9X for ratings
+                # Try 7X, 8X, 9X for ratings (NBA players rarely below 70)
                 for tens in [7, 8, 9]:
                     candidate = tens * 10 + digit
                     if 70 <= candidate <= 99:
@@ -618,6 +660,10 @@ def main() -> None:
             if key not in unique_names or conf > unique_names[key]["conf"]:
                 unique_names[key] = {"name": text, "conf": conf, "best_from": fname}
 
+            # Debug: Track duplicate name detections
+            if key in unique_players:
+                print(f"  >> Processing {text} again from {fname} (y={y0}-{y1})")
+
             pos_line = poscol[y0:y1, :].copy()
             age_line = agecol[y0:y1, :].copy()
             ovr_line = ratingcol[y0:y1, :].copy()
@@ -652,10 +698,46 @@ def main() -> None:
             }
 
             existing = unique_players.get(key)
-            if (existing is None
-                or filled_count(player) > filled_count(existing)
-                or conf > existing.get("name_conf", 0)):
+            
+            # Smart merge strategy for overlapping screenshots:
+            # - If new player, add it
+            # - If duplicate, MERGE: keep best value for EACH field (don't let nulls overwrite valid data)
+            if existing is None:
+                # New player, just add
                 unique_players[key] = player
+            else:
+                # Duplicate player - merge by keeping best data for each field
+                merged = existing.copy()
+                
+                # Update each field only if new value is better (non-null when existing is null, or both non-null but new has higher confidence)
+                if player.get("pos") is not None and existing.get("pos") is None:
+                    merged["pos"] = player["pos"]
+                
+                if player.get("age") is not None and existing.get("age") is None:
+                    merged["age"] = player["age"]
+                
+                if player.get("ovr") is not None and existing.get("ovr") is None:
+                    merged["ovr"] = player["ovr"]
+                    print(f"  {text}: Added missing OVR={player['ovr']} from {fname}")
+                
+                if player.get("in_delta") is not None and existing.get("in_delta") is None:
+                    merged["in_delta"] = player["in_delta"]
+                    merged["in_str"] = player["in_str"]
+                
+                # Update source if we got more complete data
+                new_filled = int(player.get("pos") is not None) + int(player.get("age") is not None) + int(player.get("ovr") is not None)
+                old_filled = int(existing.get("pos") is not None) + int(existing.get("age") is not None) + int(existing.get("ovr") is not None)
+                if new_filled > old_filled:
+                    merged["source"] = fname
+                    merged["y0"] = y0
+                    merged["y1"] = y1
+                
+                # Keep higher name confidence
+                if conf > existing.get("name_conf", 0):
+                    merged["name"] = text  # Use better OCR'd name
+                    merged["name_conf"] = round(conf, 2)
+                
+                unique_players[key] = merged
 
         processed += 1
 
