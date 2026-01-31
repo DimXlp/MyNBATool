@@ -1,0 +1,9 @@
+# Core dependencies
+numpy>=1.21.0
+opencv-python>=4.5.0
+pytesseract>=0.3.8
+
+# Note: Tesseract OCR must be installed separately
+# Windows: https://github.com/UB-Mannheim/tesseract/wiki
+# macOS: brew install tesseract
+# Linux: sudo apt-get install tesseract-ocr
