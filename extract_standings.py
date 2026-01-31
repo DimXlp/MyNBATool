@@ -113,7 +113,6 @@ def _parse_standings_screen(img_bgr: np.ndarray, fname: str, args) -> List[Dict[
     
     if args.debug:
         _save_debug(DEBUG_DIR / f"{Path(fname).stem}__conference_roi.png", conference_bw)
-        print(f"  Conference OCR: '{conference_text}'")
     
     screenshot_conference = "Western" if "WEST" in conference_text else "Eastern" if "EAST" in conference_text else None
     

@@ -172,6 +172,31 @@ def _load_manifest(path: Path) -> List[Dict[str, Any]]:
         raise FileNotFoundError(f"manifest.json not found at: {path.resolve()}")
     return json.loads(path.read_text(encoding="utf-8"))
 
+def _extract_team_name(img_bgr: np.ndarray, filename: str = "") -> str:
+    """Extract team name from screenshot using OCR.
+    Team name ROI: x=111, y=84, w=268, h=41
+    """
+    # Team name ROI (user-calibrated coordinates)
+    team_roi = img_bgr[84:125, 111:379].copy()
+    
+    # Preprocess for OCR
+    gray = cv2.cvtColor(team_roi, cv2.COLOR_BGR2GRAY)
+    # Invert if needed (white text on dark background)
+    if gray.mean() < 127:
+        gray = cv2.bitwise_not(gray)
+    
+    # Enlarge for better OCR
+    gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    
+    # OCR the team name
+    team_text = pytesseract.image_to_string(gray, config="--psm 7").strip()
+    
+    # Clean up team name
+    team_text = re.sub(r'[^A-Za-z0-9\s]', '', team_text)
+    team_text = re.sub(r'\s+', ' ', team_text).strip()
+    
+    return team_text if team_text else "Unknown"
+
 def _crop_roi_bgr(img_bgr: np.ndarray, roi: Tuple[int, int, int, int]) -> np.ndarray:
     x, y, w, h = roi
     return img_bgr[y:y + h, x:x + w].copy()
@@ -343,6 +368,63 @@ def _ocr_best_name(line_bgr: np.ndarray) -> Tuple[str, float]:
     best_text = re.sub(r"^([A-Za-z])[il]\.\s*", r"\1. ", best_text)
 
     return best_text, (best_conf if best_conf >= 0 else 0.0)
+
+def _has_special_icon(line_bgr: np.ndarray) -> bool:
+    """Detect if player has injury, two-way contract, or G-League icon.
+    These icons appear in the leftmost ~40 pixels of the name line.
+    Returns True if special icon detected (player should be filtered out).
+    """
+    h, w = line_bgr.shape[:2]
+    if w < 40:
+        return False
+    
+    # Check leftmost 40 pixels for icons
+    icon_region = line_bgr[:, :40].copy()
+    
+    # Convert to HSV for color detection
+    hsv = cv2.cvtColor(icon_region, cv2.COLOR_BGR2HSV)
+    
+    # Detect RED/PINK (injury icon - red cross/plus)
+    # Red in HSV wraps around 0/180
+    red_lower1 = np.array([0, 80, 80])
+    red_upper1 = np.array([10, 255, 255])
+    red_lower2 = np.array([170, 80, 80])
+    red_upper2 = np.array([180, 255, 255])
+    red_mask1 = cv2.inRange(hsv, red_lower1, red_upper1)
+    red_mask2 = cv2.inRange(hsv, red_lower2, red_upper2)
+    red_mask = cv2.bitwise_or(red_mask1, red_mask2)
+    
+    red_pixels = cv2.countNonZero(red_mask)
+    if red_pixels > 30:  # Injury icon has significant red
+        return True
+    
+    # Detect CYAN/LIGHT BLUE (two-way contract icon - circle with "2")
+    # Two-way contracts have cyan/light blue colored circle
+    cyan_lower = np.array([85, 50, 100])
+    cyan_upper = np.array([105, 255, 255])
+    cyan_mask = cv2.inRange(hsv, cyan_lower, cyan_upper)
+    
+    cyan_pixels = cv2.countNonZero(cyan_mask)
+    if cyan_pixels > 30:  # Two-way icon has cyan circle
+        return True
+    
+    # Detect WHITE/LIGHT GRAY circular shapes (G-League icon background)
+    gray = cv2.cvtColor(icon_region, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    
+    # Look for circular contours (icons are circular)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if 50 < area < 500:  # Icon size range
+            # Check circularity
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                if circularity > 0.6:  # Reasonably circular
+                    return True
+    
+    return False
 
 def _looks_like_player_name(text: str) -> bool:
     t = _normalize_name(text)
@@ -518,8 +600,6 @@ def _ocr_int_config(line_bgr: np.ndarray, debug_name: str = "") -> Tuple[Optiona
                 # OCR read "18" but it's actually "78", "19" → "79", etc.
                 corrected = 70 + (num % 10)
                 fixed_results.append((corrected, conf * 0.9))  # Slightly lower confidence
-                if debug_name:
-                    print(f"  Fixed {debug_name}: OCR read '{num}' -> corrected to '{corrected}'")
             else:
                 fixed_results.append((num, conf))
         results = fixed_results
@@ -548,10 +628,8 @@ def _ocr_int_config(line_bgr: np.ndarray, debug_name: str = "") -> Tuple[Optiona
                     if 70 <= candidate <= 99:
                         results.append((candidate, 40.0))  # Lower confidence
     
-    # If we got no valid results, log what we tried
-    if not results and debug_name:
-        partial_str = f" (partials: {partial_digits})" if partial_digits else ""
-        print(f"  OCR failed for {debug_name}{partial_str}: {'; '.join(all_attempts[:3])}")
+    # If we got no valid results, optionally log in debug mode
+    # (removed verbose logging)
     
     if not results:
         return None, 0.0
@@ -595,6 +673,7 @@ def main() -> None:
     all_line_results: List[LineResult] = []
     unique_names: Dict[str, Dict[str, Any]] = {}
     unique_players: Dict[str, Dict[str, Any]] = {}
+    teams_data: Dict[str, List[Dict[str, Any]]] = {}  # team_name -> list of players
     processed = 0
 
     def filled_count(p: dict) -> int:
@@ -615,6 +694,9 @@ def main() -> None:
         if img_bgr is None:
             print(f"WARNING: could not read image: {fname}")
             continue
+        
+        # Extract team name from this screenshot
+        team_name = _extract_team_name(img_bgr, fname)
 
         namecol = _crop_roi_bgr(img_bgr, NAME_COL_ROI)
         poscol = _crop_roi_bgr(img_bgr, POS_COL_ROI)
@@ -643,6 +725,12 @@ def main() -> None:
             if line_bgr.shape[0] < 14 or line_bgr.shape[1] < 60:
                 continue
 
+            # Check for special icons (injury, two-way, G-League) and skip
+            if _has_special_icon(line_bgr):
+                if args.debug:
+                    _save_debug(DEBUG_DIR / f"{Path(fname).stem}__line_{i:02d}_ICON_FILTERED.png", line_bgr)
+                continue
+
             if args.debug:
                 _save_debug(DEBUG_DIR / f"{Path(fname).stem}__line_{i:02d}.png", line_bgr)
 
@@ -662,10 +750,6 @@ def main() -> None:
             key = text.lower()
             if key not in unique_names or conf > unique_names[key]["conf"]:
                 unique_names[key] = {"name": text, "conf": conf, "best_from": fname}
-
-            # Debug: Track duplicate name detections
-            if key in unique_players:
-                print(f"  >> Processing {text} again from {fname} (y={y0}-{y1})")
 
             pos_line = poscol[y0:y1, :].copy()
             age_line = agecol[y0:y1, :].copy()
@@ -689,6 +773,7 @@ def main() -> None:
 
             player = {
                 "name": text,
+                "team": team_name,
                 "pos": pos,
                 "age": age_val,
                 "ovr": ovr_val,
@@ -721,7 +806,6 @@ def main() -> None:
                 
                 if player.get("ovr") is not None and existing.get("ovr") is None:
                     merged["ovr"] = player["ovr"]
-                    print(f"  {text}: Added missing OVR={player['ovr']} from {fname}")
                 
                 if player.get("in_delta") is not None and existing.get("in_delta") is None:
                     merged["in_delta"] = player["in_delta"]
@@ -750,19 +834,47 @@ def main() -> None:
         for r in all_line_results
     ]
     roster_players = sorted(unique_players.values(), key=lambda p: p["name"].lower())
+    
+    # Group players by team
+    teams_data: Dict[str, List[Dict[str, Any]]] = {}
+    for player in roster_players:
+        team = player.get("team", "Unknown")
+        if team not in teams_data:
+            teams_data[team] = []
+        teams_data[team].append(player)
+    
+    # Save combined roster file
     (OUTPUT_DIR / "roster_players.json").write_text(
         json.dumps(roster_players, indent=2),
         encoding="utf-8"
     )
+    
+    # Save team-specific files
+    teams_dir = OUTPUT_DIR / "teams"
+    teams_dir.mkdir(exist_ok=True)
+    
+    for team_name, players in teams_data.items():
+        # Clean team name for filename
+        safe_team_name = re.sub(r'[^A-Za-z0-9]', '_', team_name)
+        team_file = teams_dir / f"{safe_team_name}.json"
+        team_file.write_text(
+            json.dumps({
+                "team": team_name,
+                "players": sorted(players, key=lambda p: p["name"].lower())
+            }, indent=2),
+            encoding="utf-8"
+        )
 
     (OUTPUT_DIR / "roster_names.json").write_text(json.dumps(roster_names, indent=2), encoding="utf-8")
     (OUTPUT_DIR / "roster_names_raw.json").write_text(json.dumps(raw_out, indent=2), encoding="utf-8")
 
     print(f"Total screenshots processed: {processed}")
     print(f"Unique names extracted: {len(roster_names)}")
+    print(f"Teams processed: {len(teams_data)}")
     print(f"Saved: {OUTPUT_DIR / 'roster_names.json'}")
     print(f"Saved: {OUTPUT_DIR / 'roster_names_raw.json'}")
-    print(f"Saved: {OUTPUT_DIR / 'roster_players.json'}")
+    print(f"Saved: {OUTPUT_DIR / 'roster_players.json'} (combined)")
+    print(f"Saved: {teams_dir} (team-specific files)")
     if args.debug:
         print(f"Debug images saved in: {DEBUG_DIR.resolve()}")
 
