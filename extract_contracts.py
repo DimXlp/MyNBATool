@@ -133,6 +133,15 @@ def _normalize_name(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"^([A-Za-z])\s*\.?\s*([A-Za-z])", r"\1. \2", s)
     s = re.sub(r"^l\.\s", "I. ", s)
+    
+    # Fix: Remove injury icon OCR artifacts like "c. s " before name
+    s = re.sub(r"^[a-z]\.\s*[a-z]\.\s*", "", s, flags=re.IGNORECASE)
+    s = s.strip()
+    
+    # Fix common OCR: lowercase first letter in last name → Capitalize
+    # "J. lsaac" → "J. Isaac", "D. oncic" → "D. Oncic"
+    s = re.sub(r"(\s)([a-z])([a-z]{2,})", lambda m: m.group(1) + m.group(2).upper() + m.group(3), s)
+    
     s = re.sub(r"\b(JR|Jr|jr)\b\.?", "Jr.", s)
     s = re.sub(r"\b(SR|Sr|sr)\b\.?", "Sr.", s)
     s = re.sub(r"(Jr\.|Sr\.)", r" \1", s)
@@ -293,6 +302,10 @@ def _looks_like_player_name(text: str) -> bool:
     t = _normalize_name(text)
     t = re.sub(r"^([a-z])\.", lambda m: m.group(1).upper() + ".", t)
 
+    # Fix: Remove injury icon OCR junk like "c. s " at the start
+    t = re.sub(r"^[a-z]\.\s*[a-z]\.\?\s*", "", t, flags=re.IGNORECASE)
+    t = t.strip()
+
     parts = t.split()
     if len(parts) < 2:
         return False
@@ -301,6 +314,11 @@ def _looks_like_player_name(text: str) -> bool:
 
     if not re.fullmatch(r"[A-Z]\.?", first):
         return False
+
+    # Fix: Allow lowercase first letter in last name (OCR often fails on first letter)
+    # "lsaac" → "Isaac", "oncic" → "Doncic", "ibrahimovic" → "Ibrahimovic"
+    if re.fullmatch(r"[a-z][A-Za-z'\-]{1,}", last):
+        return True
 
     if not re.fullmatch(r"[A-Z][A-Za-z'\-]{1,}", last):
         return False
@@ -536,12 +554,21 @@ def main() -> None:
 
             text, conf = _ocr_best_name(line_bgr)
 
+            if args.debug and text:
+                print(f"  OCR extracted: '{text}' (conf={conf:.1f})")
+
             if not text:
+                if args.debug:
+                    print(f"    → FILTERED: empty text")
                 continue
             if text.upper().replace(" ", "") in {"NAME", "N.AME"}:
+                if args.debug:
+                    print(f"    → FILTERED: header text")
                 continue
 
             if not _looks_like_player_name(text):
+                if args.debug:
+                    print(f"    → FILTERED: doesn't look like player name")
                 continue
 
             all_line_results.append(LineResult(file=fname, y0=y0, y1=y1, text=text, conf=conf))
@@ -550,7 +577,18 @@ def main() -> None:
             if key not in unique_names or conf > unique_names[key]["conf"]:
                 unique_names[key] = {"name": text, "conf": conf, "best_from": fname}
 
-            # Extract contract data
+            # Extract contract data - validate bounds for each column
+            # All columns should have same height, but y0:y1 must be valid for each
+            sal_h = salarycol.shape[0]
+            name_h = namecol_trim.shape[0]
+            
+            if args.debug:
+                print(f"  {text}: name_h={name_h}, sal_h={sal_h}, y0={y0}, y1={y1}")
+            
+            if y0 >= sal_h or y1 > sal_h or y0 < 0 or y1 <= y0:
+                print(f"WARNING: Invalid line bounds for {text}: y0={y0}, y1={y1}, salary_height={sal_h}")
+                continue
+            
             salary_line = salarycol[y0:y1, :].copy()
             option_line = optioncol[y0:y1, :].copy()
             sign_line = signcol[y0:y1, :].copy()
