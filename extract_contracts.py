@@ -426,26 +426,36 @@ def _parse_option(text: str) -> Optional[str]:
     return None
 
 def _parse_sign_status(text: str) -> Optional[str]:
-    """Parse signing status like '1yr +1', '4 yrs', '2 yrs +2', etc."""
+    """Parse signing status to format like '2+1', '4', '1+2', etc.
+    Handles OCR errors: 'lyr'→'1yr', 'yfs'→'yrs', 'y's'→'yrs', '+]'→'+1'
+    """
     if not text:
         return None
     
+    # Clean up common OCR errors
     text = text.strip()
+    text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
     
-    # Pattern: "1yr +1", "2 yrs +1", "4 yrs"
-    match = re.search(r"(\d+)\s*[Yy][Rr][Ss]?\s*(\+\s*\d+)?", text)
+    # Fix common OCR mistakes:
+    # - "lyr" → "1yr", "Tyr" → "1yr" (lowercase l or uppercase T → digit 1)
+    # - "yfs" → "yrs", "y's" → "yrs", "ys" → "yrs" (missing/wrong letters)
+    # - "+]" → "+1", "+l" → "+1" (bracket or lowercase l → digit 1)
+    text = re.sub(r'^[lT]yr', '1yr', text, flags=re.IGNORECASE)
+    text = re.sub(r'yf?s?\'?s?', 'yrs', text, flags=re.IGNORECASE)
+    text = re.sub(r'\+[\]lT]', '+1', text)
+    text = re.sub(r'S\s*yrs', ' yrs', text)  # "5S yrs" → "5 yrs"
+    
+    # Pattern: extract base years and optional plus years
+    # Examples: "1yr +1", "2 yrs +1", "4 yrs", "3yrs"
+    match = re.search(r'(\d+)\s*y[a-z]*\s*(\+\s*(\d+))?', text, re.IGNORECASE)
     if match:
-        years = match.group(1)
-        plus = match.group(2).replace(" ", "") if match.group(2) else ""
+        base_years = match.group(1)
+        plus_years = match.group(3) if match.group(3) else None
         
-        # Normalize: "1yr" vs "2 yrs"
-        yr_text = "yr" if years == "1" else "yrs"
-        
-        result = f"{years}{yr_text}"
-        if plus:
-            result += f" {plus}"
-        
-        return result
+        if plus_years:
+            return f"{base_years}+{plus_years}"
+        else:
+            return base_years
     
     return None
 
