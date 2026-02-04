@@ -38,6 +38,14 @@ RIGHT_TRIM_RATIO = 0.02
 # Characters allowed for name OCR
 NAME_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.-' "
 
+# Known OCR corrections for problematic names
+# Format: "incorrect ocr" -> "correct name"
+NAME_CORRECTIONS = {
+    "d. oncic": "L. Doncic",
+    "d oncic": "L. Doncic",
+    "oncic": "Doncic",
+}
+
 # Paths
 PROJECT_ROOT = Path(".")
 INPUT_DIR = PROJECT_ROOT / "input_screenshots"
@@ -125,6 +133,14 @@ def _save_debug(path: Path, img: np.ndarray) -> None:
 def _normalize_name(s: str) -> str:
     """Normalize player name to canonical format."""
     s = (s or "").strip()
+    
+    # Apply known OCR corrections first (case-insensitive)
+    s_lower = s.lower()
+    for wrong, correct in NAME_CORRECTIONS.items():
+        if wrong in s_lower:
+            s = correct
+            break
+    
     s = s.replace("|", " ")
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"([A-Za-z])\.([A-Za-z])", r"\1. \2", s)
