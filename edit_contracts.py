@@ -16,6 +16,18 @@ def load_contracts() -> List[Dict[str, Any]]:
     
     return json.loads(CONTRACTS_FILE.read_text(encoding="utf-8"))
 
+def get_teams(contracts: List[Dict[str, Any]]) -> List[str]:
+    """Extract unique teams from contracts."""
+    teams = set()
+    for contract in contracts:
+        team = contract.get("team", "Unknown")
+        teams.add(team)
+    return sorted(teams)
+
+def filter_contracts_by_team(contracts: List[Dict[str, Any]], team_name: str) -> List[Dict[str, Any]]:
+    """Filter contracts to only show players from a specific team."""
+    return [c for c in contracts if c.get("team", "Unknown") == team_name]
+
 def save_contracts(contracts: List[Dict[str, Any]]) -> None:
     """Save contracts to JSON file."""
     CONTRACTS_FILE.write_text(json.dumps(contracts, indent=2), encoding="utf-8")
@@ -132,7 +144,7 @@ def edit_contract_menu(contracts: List[Dict[str, Any]], idx: int) -> None:
         else:
             print("Invalid option. Try again.")
 
-def add_contract_menu(contracts: List[Dict[str, Any]]) -> None:
+def add_contract_menu(contracts: List[Dict[str, Any]], team_name: Optional[str] = None) -> None:
     """Add a new contract."""
     print("\n=== Add New Contract ===")
     
@@ -141,7 +153,12 @@ def add_contract_menu(contracts: List[Dict[str, Any]]) -> None:
         print("Name is required. Cancelled.")
         return
     
-    team = input("Team name: ").strip()
+    if team_name:
+        team = team_name
+        print(f"Team: {team}")
+    else:
+        team = input("Team name: ").strip()
+    
     salary = input("Salary (e.g., $40.54M): ").strip()
     option = input("Option (Player/Team/None): ").strip()
     sign = input("Signing status (e.g., 1yr +1): ").strip()
@@ -203,52 +220,54 @@ def remove_contract_menu(contracts: List[Dict[str, Any]]) -> None:
         except ValueError:
             print("Invalid input")
 
-def main_menu() -> None:
-    """Main menu loop."""
-    contracts = load_contracts()
-    print(f"\nLoaded {len(contracts)} contracts from {CONTRACTS_FILE}")
-    
+def team_menu(contracts: List[Dict[str, Any]], team_name: str) -> bool:
+    """Menu for a specific team's contracts."""
     unsaved_changes = False
     
     while True:
+        team_contracts = filter_contracts_by_team(contracts, team_name)
+        
         print("\n" + "="*60)
-        print("CONTRACT EDITOR")
+        print(f"CONTRACT EDITOR - {team_name}")
         print("="*60)
-        print(f"Total contracts: {len(contracts)}")
+        print(f"Team contracts: {len(team_contracts)}")
         if unsaved_changes:
             print("⚠ You have unsaved changes")
+        
         print("\nOptions:")
         print("1. Search and edit contract")
-        print("2. List all contracts")
+        print("2. List team contracts")
         print("3. Add new contract")
         print("4. Remove contract")
-        print("5. Sort contracts by name")
-        print("6. Save changes")
-        print("7. Discard changes and exit")
-        print("8. Save and exit")
+        print("5. Back to team selection")
         
-        choice = input("\nChoose option (1-8): ").strip()
+        choice = input("\nChoose option (1-5): ").strip()
         
         if choice == "1":
             name = input("Enter player name to search: ").strip()
-            matches = search_contracts(contracts, name)
+            matches = search_contracts(team_contracts, name)
             
             if not matches:
-                print(f"No contracts found matching '{name}'")
+                print(f"No contracts found matching '{name}' in {team_name}")
             elif len(matches) == 1:
-                edit_contract_menu(contracts, matches[0])
+                # Find the actual index in full contracts list
+                team_contract = team_contracts[matches[0]]
+                actual_idx = contracts.index(team_contract)
+                edit_contract_menu(contracts, actual_idx)
                 unsaved_changes = True
             else:
                 print(f"Found {len(matches)} contracts:")
                 for i, idx in enumerate(matches, 1):
-                    contract = contracts[idx]
-                    print(f"{i}. {contract['name']} - {contract.get('team', 'Unknown')}")
+                    contract = team_contracts[idx]
+                    print(f"{i}. {contract['name']} - {contract.get('salary', 'N/A')}")
                 
                 choice_num = input(f"Choose contract to edit (1-{len(matches)}): ").strip()
                 try:
                     choice_idx = int(choice_num) - 1
                     if 0 <= choice_idx < len(matches):
-                        edit_contract_menu(contracts, matches[choice_idx])
+                        team_contract = team_contracts[matches[choice_idx]]
+                        actual_idx = contracts.index(team_contract)
+                        edit_contract_menu(contracts, actual_idx)
                         unsaved_changes = True
                     else:
                         print("Invalid choice")
@@ -256,12 +275,12 @@ def main_menu() -> None:
                     print("Invalid input")
         
         elif choice == "2":
-            print(f"\nAll contracts ({len(contracts)}):")
-            for i, contract in enumerate(contracts, 1):
-                print(f"{i}. {contract['name']} - {contract.get('team', 'Unknown')} - {contract.get('salary', 'N/A')}")
+            print(f"\n{team_name} contracts ({len(team_contracts)}):")
+            for i, contract in enumerate(team_contracts, 1):
+                print(f"{i}. {contract['name']} - {contract.get('salary', 'N/A')}")
         
         elif choice == "3":
-            add_contract_menu(contracts)
+            add_contract_menu(contracts, team_name)
             unsaved_changes = True
         
         elif choice == "4":
@@ -269,32 +288,87 @@ def main_menu() -> None:
             unsaved_changes = True
         
         elif choice == "5":
-            contracts.sort(key=lambda c: c["name"].lower())
-            print("✓ Sorted contracts by name")
-            unsaved_changes = True
-        
-        elif choice == "6":
-            save_contracts(contracts)
-            unsaved_changes = False
-        
-        elif choice == "7":
-            if unsaved_changes:
-                confirm = input("Discard unsaved changes? (y/n): ").strip().lower()
-                if confirm == "y":
-                    print("Changes discarded. Exiting.")
-                    break
-            else:
-                print("No changes to discard. Exiting.")
-                break
-        
-        elif choice == "8":
-            if unsaved_changes:
-                save_contracts(contracts)
-            print("Exiting.")
             break
         
         else:
             print("Invalid option. Try again.")
+    
+    return unsaved_changes
+
+def main_menu() -> None:
+    """Main menu with team selection."""
+    contracts = load_contracts()
+    print(f"\nLoaded {len(contracts)} contracts from {CONTRACTS_FILE}")
+    
+    unsaved_changes = False
+    
+    while True:
+        teams = get_teams(contracts)
+        
+        print("\n" + "="*60)
+        print("CONTRACT EDITOR - TEAM SELECTION")
+        print("="*60)
+        print(f"Total contracts: {len(contracts)}")
+        print(f"Teams: {len(teams)}")
+        if unsaved_changes:
+            print("⚠ You have unsaved changes")
+        
+        print("\nTeams:")
+        for i, team in enumerate(teams, 1):
+            team_count = len(filter_contracts_by_team(contracts, team))
+            print(f"  {i}. {team} ({team_count} contracts)")
+        
+        print(f"\n  {len(teams)+1}. View all contracts")
+        print(f"  {len(teams)+2}. Sort all contracts by name")
+        print(f"  {len(teams)+3}. Save changes")
+        print(f"  {len(teams)+4}. Discard changes and exit")
+        print(f"  {len(teams)+5}. Save and exit")
+        
+        choice = input("\nChoose option: ").strip()
+        
+        try:
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(teams):
+                selected_team = teams[choice_num - 1]
+                team_modified = team_menu(contracts, selected_team)
+                unsaved_changes = unsaved_changes or team_modified
+            
+            elif choice_num == len(teams) + 1:
+                print(f"\nAll contracts ({len(contracts)}):")
+                for i, contract in enumerate(contracts, 1):
+                    print(f"{i}. {contract['name']} - {contract.get('team', 'Unknown')} - {contract.get('salary', 'N/A')}")
+                input("\nPress Enter to continue...")
+            
+            elif choice_num == len(teams) + 2:
+                contracts.sort(key=lambda c: c["name"].lower())
+                print("✓ Sorted contracts by name")
+                unsaved_changes = True
+            
+            elif choice_num == len(teams) + 3:
+                save_contracts(contracts)
+                unsaved_changes = False
+            
+            elif choice_num == len(teams) + 4:
+                if unsaved_changes:
+                    confirm = input("Discard unsaved changes? (y/n): ").strip().lower()
+                    if confirm == "y":
+                        print("Changes discarded. Exiting.")
+                        break
+                else:
+                    print("No changes to discard. Exiting.")
+                    break
+            
+            elif choice_num == len(teams) + 5:
+                if unsaved_changes:
+                    save_contracts(contracts)
+                print("Exiting.")
+                break
+            
+            else:
+                print("Invalid option. Try again.")
+        
+        except ValueError:
+            print("Invalid input")
 
 if __name__ == "__main__":
     main_menu()

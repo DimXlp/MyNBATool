@@ -18,23 +18,39 @@ def save_roster(roster):
     ROSTER_FILE.write_text(json.dumps(roster, indent=2), encoding="utf-8")
     print(f"\n✓ Saved to {ROSTER_FILE}")
 
-def display_roster(roster):
+def get_teams(roster):
+    """Extract unique teams from roster."""
+    teams = set()
+    for player in roster:
+        team = player.get("team", "Unknown")
+        teams.add(team)
+    return sorted(teams)
+
+def filter_roster_by_team(roster, team_name):
+    """Filter roster to only show players from a specific team."""
+    return [p for p in roster if p.get("team", "Unknown") == team_name]
+
+def display_roster(roster, team_name=None):
     """Display current roster with all player data."""
     print("\n" + "="*80)
-    print("ROSTER")
+    if team_name:
+        print(f"ROSTER - {team_name}")
+    else:
+        print("ROSTER")
     print("="*80)
-    print(f"{'#':<3} {'Name':<25} {'POS':<6} {'AGE':<5} {'OVR':<5} {'Δ':<4}")
+    print(f"{'#':<3} {'Name':<25} {'Team':<20} {'POS':<6} {'AGE':<5} {'OVR':<5} {'Δ':<4}")
     print("-"*80)
     
     for i, player in enumerate(roster, 1):
         name = player.get("name", "???")
+        team = player.get("team", "Unknown")
         pos = player.get("pos", "?")
         age = str(player.get("age", "?"))
         ovr = str(player.get("ovr", "?"))
         delta = player.get("in_delta")
         delta_str = f"+{delta}" if delta and delta > 0 else str(delta) if delta else ""
         
-        print(f"{i:<3} {name:<25} {pos:<6} {age:<5} {ovr:<5} {delta_str:<4}")
+        print(f"{i:<3} {name:<25} {team:<20} {pos:<6} {age:<5} {ovr:<5} {delta_str:<4}")
     
     # Count complete players
     complete = sum(1 for p in roster if p.get("pos") and p.get("age") and p.get("ovr"))
@@ -130,13 +146,21 @@ def edit_player_field(roster):
     else:
         print("Invalid option")
 
-def add_missing_player(roster):
+def add_missing_player(roster, team_name=None):
     """Add a missing player."""
     print("\nAdd missing player:")
     
     name = input("Player name (e.g., J. Smith): ").strip()
     if not name:
         return
+    
+    if team_name:
+        team = team_name
+        print(f"Team: {team}")
+    else:
+        team = input("Team name: ").strip()
+        if not team:
+            team = "Unknown"
     
     pos = input("Position (PG/SG/SF/PF/C): ").strip().upper()
     if not pos:
@@ -177,6 +201,7 @@ def add_missing_player(roster):
     
     new_player = {
         "name": name,
+        "team": team,
         "pos": pos,
         "age": age,
         "ovr": ovr,
@@ -222,15 +247,13 @@ def sort_roster(roster):
     roster.sort(key=lambda p: p["name"].lower())
     print("✓ Sorted roster alphabetically")
 
-def main():
-    roster = load_roster()
-    if roster is None:
-        return
-    
+def team_menu(roster, team_name):
+    """Menu for a specific team."""
     modified = False
     
     while True:
-        display_roster(roster)
+        team_roster = filter_roster_by_team(roster, team_name)
+        display_roster(team_roster, team_name)
         
         print("\n" + "="*80)
         print("OPTIONS:")
@@ -238,17 +261,16 @@ def main():
         print("  2. Add missing player")
         print("  3. Remove player")
         print("  4. Sort roster alphabetically")
-        print("  5. Save and exit")
-        print("  6. Exit without saving")
+        print("  5. Back to team selection")
         print("="*80)
         
-        choice = input("\nSelect option (1-6): ").strip()
+        choice = input("\nSelect option (1-5): ").strip()
         
         if choice == "1":
             edit_player_field(roster)
             modified = True
         elif choice == "2":
-            add_missing_player(roster)
+            add_missing_player(roster, team_name)
             modified = True
         elif choice == "3":
             remove_player(roster)
@@ -257,21 +279,66 @@ def main():
             sort_roster(roster)
             modified = True
         elif choice == "5":
-            if modified:
-                save_roster(roster)
-            else:
-                print("\nNo changes made.")
             break
-        elif choice == "6":
-            if modified:
-                confirm = input("\nDiscard changes? (y/n): ").strip().lower()
-                if confirm == "y":
-                    print("Changes discarded.")
-                    break
-            else:
-                break
         else:
             print("Invalid option")
+    
+    return modified
+
+def main():
+    roster = load_roster()
+    if roster is None:
+        return
+    
+    modified = False
+    
+    while True:
+        teams = get_teams(roster)
+        
+        print("\n" + "="*80)
+        print("ROSTER EDITOR - TEAM SELECTION")
+        print("="*80)
+        print(f"Total players: {len(roster)}")
+        print(f"Teams: {len(teams)}\n")
+        
+        for i, team in enumerate(teams, 1):
+            team_count = len(filter_roster_by_team(roster, team))
+            print(f"  {i}. {team} ({team_count} players)")
+        
+        print(f"\n  {len(teams)+1}. View all players")
+        print(f"  {len(teams)+2}. Save and exit")
+        print(f"  {len(teams)+3}. Exit without saving")
+        print("="*80)
+        
+        choice = input("\nSelect team number: ").strip()
+        
+        try:
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(teams):
+                selected_team = teams[choice_num - 1]
+                team_modified = team_menu(roster, selected_team)
+                modified = modified or team_modified
+            elif choice_num == len(teams) + 1:
+                display_roster(roster)
+                input("\nPress Enter to continue...")
+            elif choice_num == len(teams) + 2:
+                if modified:
+                    save_roster(roster)
+                else:
+                    print("\nNo changes made.")
+                break
+            elif choice_num == len(teams) + 3:
+                if modified:
+                    confirm = input("\nDiscard changes? (y/n): ").strip().lower()
+                    if confirm == "y":
+                        print("Changes discarded.")
+                        break
+                else:
+                    break
+            else:
+                print("Invalid option")
+        except ValueError:
+            print("Invalid input")
 
 if __name__ == "__main__":
     main()
