@@ -24,7 +24,8 @@ TESSERACT_CMD: Optional[str] = None
 YEAR_COL_ROI: Tuple[int, int, int, int] = (96, 272, 122, 658)
 ROUND_COL_ROI: Tuple[int, int, int, int] = (223, 272, 115, 658)
 PICK_COL_ROI: Tuple[int, int, int, int] = (340, 272, 99, 658)
-PROTECTION_COL_ROI: Tuple[int, int, int, int] = (440, 272, 346, 658)
+# Protection column is wider and starts slightly left to capture center-aligned text
+PROTECTION_COL_ROI: Tuple[int, int, int, int] = (420, 272, 380, 658)
 ORIGIN_COL_ROI: Tuple[int, int, int, int] = (793, 272, 145, 658)
 
 # Paths
@@ -35,6 +36,14 @@ DRAFT_PICKS_FILE = OUTPUT_DIR / "draft_picks.json"
 TEAMS_DRAFT_DIR = OUTPUT_DIR / "teams_draft_picks"
 MANIFEST_PATH = OUTPUT_DIR / "manifest.json"
 DEBUG_DIR = OUTPUT_DIR / "debug_draft_picks"
+
+# NBA Teams for origin validation
+NBA_TEAMS = [
+    "Hawks", "Celtics", "Nets", "Hornets", "Bulls", "Cavaliers", "Mavericks", "Nuggets",
+    "Pistons", "Warriors", "Rockets", "Pacers", "Clippers", "Lakers", "Grizzlies", "Heat",
+    "Bucks", "Timberwolves", "Pelicans", "Knicks", "Thunder", "Magic", "76ers", "Suns",
+    "Trail Blazers", "Kings", "Spurs", "Raptors", "Jazz", "Wizards"
+]
 
 # =========================
 # Helpers
@@ -75,10 +84,10 @@ def _is_draft_picks_screen(img_bgr: np.ndarray) -> bool:
 
 def _extract_team_name(img_bgr: np.ndarray) -> str:
     """Extract team name from screenshot using OCR.
-    Team name appears in upper right with logo (1920x1080 resolution).
+    Team name appears just above the column headers (1920x1080 resolution).
     """
-    # Try upper right area where team name + logo appears
-    team_roi = img_bgr[15:85, 1620:1900].copy()
+    # Team name appears just above column headers around Y 180-250
+    team_roi = img_bgr[180:250, 50:900].copy()
     
     gray = cv2.cvtColor(team_roi, cv2.COLOR_BGR2GRAY)
     if gray.mean() < 127:
@@ -96,6 +105,9 @@ def _extract_team_name(img_bgr: np.ndarray) -> str:
     words = [w for w in team_text.split() if len(w) > 3]
     if words:
         team_text = words[-1]
+    
+    # Fix common OCR errors
+    team_text = team_text.replace("Anicks", "Knicks")
     
     return team_text if team_text else "Unknown"
 
@@ -124,9 +136,10 @@ def _find_text_lines(binary: np.ndarray) -> List[Tuple[int, int]]:
     """Find text line boundaries in binary image."""
     h, w = binary.shape
     row_sum = binary.sum(axis=1) / (255.0 * w)
-    smooth = np.convolve(row_sum, np.ones(9) / 9, mode="same")
+    smooth = np.convolve(row_sum, np.ones(7) / 7, mode="same")
 
-    thr = max(0.02, float(np.percentile(smooth, 85)) * 0.25)
+    # Lower threshold to catch more lines
+    thr = max(0.01, float(np.percentile(smooth, 75)) * 0.2)
     in_text = smooth > thr
 
     lines: List[Tuple[int, int]] = []
@@ -137,17 +150,33 @@ def _find_text_lines(binary: np.ndarray) -> List[Tuple[int, int]]:
             while y < h and in_text[y]:
                 y += 1
             y1 = y
-            if y1 - y0 >= 8:
+            # Accept smaller line heights
+            if y1 - y0 >= 6:
                 lines.append((y0, y1))
         else:
             y += 1
     return lines
 
-def _prep_for_ocr(line_bgr: np.ndarray) -> np.ndarray:
+def _prep_for_ocr(line_bgr: np.ndarray, is_protection: bool = False) -> np.ndarray:
     """Prepare text line for OCR."""
     gray = cv2.cvtColor(line_bgr, cv2.COLOR_BGR2GRAY)
-    bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-    bw = cv2.resize(bw, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+    
+    if is_protection:
+        # Protection column needs special handling
+        # First resize to make text larger
+        gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+        # Use simple threshold instead of adaptive for cleaner results
+        _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Slight dilation to connect broken characters
+        kernel = np.ones((2, 2), np.uint8)
+        bw = cv2.dilate(bw, kernel, iterations=1)
+    else:
+        bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        bw = cv2.resize(bw, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+        # Additional cleanup for better OCR
+        kernel = np.ones((2, 2), np.uint8)
+        bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kernel)
+    
     bw = cv2.copyMakeBorder(bw, 14, 14, 14, 14, cv2.BORDER_CONSTANT, value=255)
     return bw
 
@@ -169,12 +198,26 @@ def _normalize_year(text: str) -> Optional[str]:
     return None
 
 def _normalize_round(text: str) -> Optional[str]:
-    """Normalize round text (e.g., '1st', '2nd')."""
+    """Normalize round text (e.g., '1st', '2nd').
+    NBA only has 2 rounds, so we look for 1/2 or st/nd suffix.
+    """
     text = text.strip().lower()
-    if "1st" in text or "1" in text:
-        return "1st"
-    elif "2nd" in text or "2" in text:
+    
+    # Look for "2" anywhere - if found, it's 2nd round
+    # Common OCR errors: 2nd, znd, 2na, and
+    if re.search(r'2', text) or "znd" in text or "2na" in text or "and" in text:
         return "2nd"
+    
+    # Look for "1" or 1st-like patterns
+    if re.search(r'1', text) or "ist" in text or "lst" in text or "ict" in text or "det" in text:
+        return "1st"
+    
+    # Look for suffix pattern: if ends with 'st' it's 1st, if ends with 'nd' it's 2nd  
+    if text.endswith('st') or text.endswith('ct'):
+        return "1st"
+    elif text.endswith('nd') or text.endswith('na'):
+        return "2nd"
+    
     return None
 
 def _normalize_pick(text: str) -> Optional[str]:
@@ -189,13 +232,128 @@ def _normalize_pick(text: str) -> Optional[str]:
     return None
 
 def _normalize_protection(text: str) -> Optional[str]:
-    """Normalize protection text."""
+    """Normalize protection text.
+    Valid patterns: 'Swap Worst with [Team]', 'Swap Best with [Team]', 'Lottery Protected', or null.
+    """
     text = text.strip()
     if not text or text in ["--", "None"]:
         return None
-    # Clean up common OCR errors
+    
     text = re.sub(r'\s+', ' ', text)
+    text_lower = text.lower()
+    
+    # Check for "Swap Worst with" pattern
+    if "swap" in text_lower and "worst" in text_lower:
+        # Extract team name after "with"
+        match = re.search(r'with\s+([A-Za-z]+)', text, re.IGNORECASE)
+        if match:
+            team = _find_closest_team(match.group(1))
+            if team:
+                return f"Swap Worst with {team}"
+        return text  # Return as-is if can't parse
+    
+    # Check for "Swap Best with" pattern
+    if "swap" in text_lower and "best" in text_lower:
+        # Extract team name after "with"
+        match = re.search(r'with\s+([A-Za-z]+)', text, re.IGNORECASE)
+        if match:
+            team = _find_closest_team(match.group(1))
+            if team:
+                return f"Swap Best with {team}"
+        return text  # Return as-is if can't parse
+    
+    # Check for "Lottery Protected"
+    if "lottery" in text_lower and "protect" in text_lower:
+        return "Lottery Protected"
+    
+    # Check for top-N protection pattern (e.g., "Top 10 Protected")
+    match = re.search(r'top\s+(\d+)\s+protect', text_lower)
+    if match:
+        return f"Top {match.group(1)} Protected"
+    
+    # If it's gibberish (too many non-alpha characters or too many short words), return None
+    alpha_chars = sum(c.isalpha() for c in text)
+    if len(text) > 10 and alpha_chars / len(text) < 0.5:
+        return None
+    
+    # Check if text has too many very short words (likely OCR garbage)
+    words = text.split()
+    if len(words) > 5:
+        short_words = sum(1 for w in words if len(w) <= 2)
+        if short_words / len(words) > 0.6:  # More than 60% are 1-2 letter words
+            return None
+    
+    # If we got here and text doesn't match known patterns, it's likely OCR error
+    # Only return it if it looks reasonably structured
+    if len(text) > 15 and not any(keyword in text_lower for keyword in ['swap', 'lottery', 'protect', 'top']):
+        return None
+    
     return text
+
+def _find_closest_team(text: str) -> Optional[str]:
+    """Find closest matching NBA team name."""
+    if not text:
+        return None
+    
+    text = text.lower()
+    # Direct match
+    for team in NBA_TEAMS:
+        if team.lower() in text or text in team.lower():
+            return team
+    
+    # Common OCR errors
+    corrections = {
+        "buls": "Bulls",
+        "bull": "Bulls",
+        "pauls": "Bulls",  # OCR error
+        "incts": "Bulls",  # OCR error for Bulls
+        "inctsbus": "Bulls",  # OCR error for Bulls
+        "lakers": "Lakers",
+        "fakes": "Lakers",  # OCR error
+        "takers": "Lakers",  # OCR error
+        "knicks": "Knicks",
+        "anicks": "Knicks",
+        "nicks": "Knicks",  # OCR error
+        "kicks": "Knicks",  # OCR error
+        "kings": "Kings",
+        "magic": "Magic",
+        "maaic": "Magic",
+        "iviagic": "Wizards",  # Common OCR error for Wizards
+        "wizaras": "Wizards",  # OCR error
+        "win": "Wizards",  # Fragment of Wizards
+        "wiards": "Wizards",
+        "nets": "Nets",
+        "pelicans": "Pelicans",
+        "pecans": "Pelicans",  # OCR error
+        "pacers": "Pacers",
+        "suns": "Suns",
+        "jazz": "Jazz",
+        "jez": "Jazz",  # OCR error
+        "wizards": "Wizards",
+        "vvizalgs": "Wizards",
+        "wvizards": "Wizards",
+        "grizzlies": "Grizzlies",
+        "celtics": "Celtics",
+        "attics": "Celtics",  # OCR error
+        "cater": "Celtics",  # OCR error
+        "heat": "Heat",
+        "hawks": "Hawks",
+        "pistons": "Pistons",
+        "bucks": "Bucks",
+        "cavaliers": "Cavaliers",
+        "cavs": "Cavaliers",
+        "mae": "Magic",  # OCR error
+        "zane": "Suns",  # OCR error
+        "foe": "76ers",  # OCR error
+        "ses": "Suns",  # OCR error
+    }
+    
+    for key, value in corrections.items():
+        if key in text:
+            return value
+    
+    # If no match found, return cleaned text
+    return text.title() if len(text) > 2 else None
 
 def _normalize_origin(text: str) -> Optional[str]:
     """Normalize origin (team name)."""
@@ -205,7 +363,9 @@ def _normalize_origin(text: str) -> Optional[str]:
     # Clean up
     text = re.sub(r'[^A-Za-z0-9\s]', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
-    return text if text else None
+    
+    # Find closest NBA team
+    return _find_closest_team(text)
 
 # =========================
 # Main
@@ -270,34 +430,125 @@ def main() -> None:
         _save_debug(DEBUG_DIR / f"{img_path.stem}_protection.png", protection_col)
         _save_debug(DEBUG_DIR / f"{img_path.stem}_origin.png", origin_col)
         
-        # Find text lines in year column (use as reference for all columns)
+        # Find text lines in both year and origin columns separately
         year_bw = _preprocess_for_line_detection(year_col)
-        lines = _find_text_lines(year_bw)
+        year_lines = _find_text_lines(year_bw)
         
-        print(f"  Found {len(lines)} draft pick lines")
+        origin_bw = _preprocess_for_line_detection(origin_col)
+        origin_lines = _find_text_lines(origin_bw)
         
-        for idx, (y0, y1) in enumerate(lines, 1):
-            # Extract each field
-            year_line = year_col[y0:y1, :].copy()
-            round_line = round_col[y0:y1, :].copy()
-            pick_line = pick_col[y0:y1, :].copy()
-            protection_line = protection_col[y0:y1, :].copy()
-            origin_line = origin_col[y0:y1, :].copy()
+        print(f"  Found {len(year_lines)} draft pick lines in year column")
+        print(f"  Found {len(origin_lines)} text lines in origin column")
+        
+        # Pre-scan round column to find where each round marker appears (Y position)
+        round_gray = cv2.cvtColor(round_col, cv2.COLOR_BGR2GRAY)
+        round_gray_scaled = cv2.resize(round_gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        
+        # Find all instances of "1st" and "2nd" with their Y positions
+        round_markers = []  # List of (y_pos, round_type)
+        
+        # Search for "1st" and "2nd" text positions
+        height = round_col.shape[0]
+        step = 30  # Check every 30 pixels
+        for y in range(0, height, step):
+            snippet = round_gray[y:min(y+40, height), :]
+            if snippet.shape[0] < 10:
+                continue
+            snippet_scaled = cv2.resize(snippet, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            text = pytesseract.image_to_string(snippet_scaled, config="--psm 7").strip().lower()
+            
+            # Check what round this is
+            round_val = _normalize_round(text)
+            if round_val:
+                round_markers.append((y, round_val))
+        
+        print(f"  Round markers found: {round_markers}")
+        
+        # Use round markers to determine which lines belong to which round
+        def get_round_for_line(y_pos):
+            """Determine round based on Y position and round markers."""
+            # Find the most recent round marker before this Y position
+            applicable_round = "1st"  # Default to 1st
+            for marker_y, marker_round in round_markers:
+                if marker_y <= y_pos:
+                    applicable_round = marker_round
+                else:
+                    break
+            return applicable_round
+        
+        last_valid_round = None  # Track the last valid round for merged cells
+        
+        # Match each year line to the closest origin line
+        for idx, (y0, y1) in enumerate(year_lines, 1):
+            # Expand line boundaries to ensure we capture all text
+            y0_expanded = max(0, y0 - 12)
+            y1_expanded = min(year_col.shape[0], y1 + 12)
+            
+            # Extract each field with expanded boundaries from year column position
+            year_line = year_col[y0_expanded:y1_expanded, :].copy()
+            round_line = round_col[y0_expanded:y1_expanded, :].copy()
+            pick_line = pick_col[y0_expanded:y1_expanded, :].copy()
+            protection_line = protection_col[y0_expanded:y1_expanded, :].copy()
+            
+            # Find the origin line that's closest to this year line
+            # Origin is center-aligned so text may be at different Y position
+            year_center = (y0 + y1) // 2
+            best_origin_line = None
+            best_distance = float('inf')
+            
+            for orig_y0, orig_y1 in origin_lines:
+                origin_center = (orig_y0 + orig_y1) // 2
+                distance = abs(origin_center - year_center)
+                # Only consider origin lines within 50 pixels of the year line
+                if distance < 50 and distance < best_distance:
+                    best_distance = distance
+                    best_origin_line = (orig_y0, orig_y1)
+            
+            # Extract origin using its own line boundaries (or expanded year line if no match)
+            if best_origin_line:
+                orig_y0, orig_y1 = best_origin_line
+                orig_y0_expanded = max(0, orig_y0 - 12)
+                orig_y1_expanded = min(origin_col.shape[0], orig_y1 + 12)
+                origin_line = origin_col[orig_y0_expanded:orig_y1_expanded, :].copy()
+            else:
+                # Fallback: use same boundaries as year line
+                origin_line = origin_col[y0_expanded:y1_expanded, :].copy()
             
             # OCR each field
             year_bw = _prep_for_ocr(year_line)
             round_bw = _prep_for_ocr(round_line)
             pick_bw = _prep_for_ocr(pick_line)
-            protection_bw = _prep_for_ocr(protection_line)
+            protection_bw = _prep_for_ocr(protection_line, is_protection=True)
             origin_bw = _prep_for_ocr(origin_line)
             
             year_text = _ocr_text(year_bw, "--psm 7")
             round_text = _ocr_text(round_bw, "--psm 7")
             pick_text = _ocr_text(pick_bw, "--psm 7")
-            protection_text = _ocr_text(protection_bw, "--psm 7")
-            origin_text = _ocr_text(origin_bw, "--psm 7")
+            protection_text = _ocr_text(protection_bw, "--psm 6")
             
-            print(f"    Line {idx} raw OCR: year='{year_text}' round='{round_text}' pick='{pick_text}' protection='{protection_text}' origin='{origin_text}'")
+            # For origin, try multiple PSM modes and keep best result
+            origin_texts = [
+                _ocr_text(origin_bw, "--psm 7").strip(),  # Single line
+                _ocr_text(origin_bw, "--psm 8").strip(),  # Single word
+                _ocr_text(origin_bw, "--psm 6").strip(),  # Block of text
+            ]
+            # Choose the longest result that has alphabetic characters
+            origin_text = ""
+            for txt in origin_texts:
+                if len(txt) > len(origin_text) and any(c.isalpha() for c in txt):
+                    origin_text = txt
+            
+            # Debug: save origin lines that look wrong
+            if year_text and ("swap" in protection_text.lower() or len(origin_text) < 4 or not any(c.isupper() for c in origin_text)):
+                cv2.imwrite(str(DEBUG_DIR / f"{img_path.stem}_origin_line{idx}_{year_text}_debug.png"), origin_bw)
+                print(f"    DEBUG: Saved origin line {idx} for year {year_text}: '{origin_text}' (PSM results: {origin_texts})")
+            
+            # Debug: save problematic protection lines
+            if "lottery" in protection_text.lower() or (year_text == "2028" and origin_text and "bull" in origin_text.lower()):
+                cv2.imwrite(str(DEBUG_DIR / f"{img_path.stem}_prot_line{idx}_debug.png"), protection_bw)
+                print(f"    DEBUG: Saved protection line {idx} (contains lottery or Bulls): '{protection_text}'")
+            
+            print(f"    Line {idx} raw OCR: year='{year_text}' round='{round_text}' pick='{pick_text}' protection='{protection_text[:30]}' origin='{origin_text}'")
             
             # Normalize
             year = _normalize_year(year_text)
@@ -306,9 +557,32 @@ def main() -> None:
             protection = _normalize_protection(protection_text)
             origin = _normalize_origin(origin_text)
             
+            print(f"    Line {idx} normalized: year={year} round={round_type} (from '{round_text}')")
+            
+            # Skip header rows
+            if year_text.upper() == "YEAR" or round_text.upper() == "ROUND":
+                continue
+            
+            # Determine round: use OCR if available, otherwise use Y position
+            if round_type:
+                last_valid_round = round_type
+            else:
+                # Use Y position to determine round
+                round_from_position = get_round_for_line(y0)
+                if round_from_position:
+                    round_type = round_from_position
+                    last_valid_round = round_type
+                elif year and last_valid_round:
+                    # Fall back to previous round
+                    round_type = last_valid_round
+            
             if not year or not round_type:
                 # Skip invalid lines
                 continue
+            
+            # Default origin to team name if null (team owns their own pick)
+            if not origin:
+                origin = team_name
             
             pick_record = {
                 "team": team_name,
