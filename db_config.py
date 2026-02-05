@@ -49,6 +49,50 @@ def test_connection() -> bool:
         print(f"✗ Connection failed: {e}")
         return False
 
+def get_team_id_from_name(cur, team_name: str) -> Optional[int]:
+    """
+    Get team_id from teams table by team name.
+    Tries multiple matching strategies to handle various name formats.
+    
+    Args:
+        cur: Database cursor
+        team_name: Team name to look up (e.g., "Lakers", "Los Angeles Lakers", "LAL")
+        
+    Returns:
+        team_id if found, None otherwise
+    """
+    if not team_name:
+        return None
+    
+    # Try exact match first
+    cur.execute("SELECT team_id FROM teams WHERE team_name = %s", (team_name,))
+    result = cur.fetchone()
+    if result:
+        return result[0]
+    
+    # Try abbreviation match
+    cur.execute("SELECT team_id FROM teams WHERE abbreviation = %s", (team_name,))
+    result = cur.fetchone()
+    if result:
+        return result[0]
+    
+    # Try partial match (for names like "Lakers" vs "Los Angeles Lakers")
+    cur.execute("SELECT team_id FROM teams WHERE team_name ILIKE %s", (f'%{team_name}%',))
+    result = cur.fetchone()
+    if result:
+        return result[0]
+    
+    # If still not found, try reverse partial match (check if any word matches)
+    team_words = team_name.split()
+    if team_words:
+        last_word = team_words[-1]  # Usually the main identifier (e.g., "Lakers", "Knicks")
+        cur.execute("SELECT team_id FROM teams WHERE team_name ILIKE %s", (f'%{last_word}%',))
+        result = cur.fetchone()
+        if result:
+            return result[0]
+    
+    return None
+
 def database_exists() -> bool:
     """Check if the NBA 2K26 database exists."""
     try:
