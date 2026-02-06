@@ -71,7 +71,7 @@ def parse_record(record_str):
         return None, None
 
 def import_roster_players(conn, cur):
-    """Import roster players with UUID generation"""
+    """Import roster players with UUID generation - replaces data only for teams in the new JSON"""
     json_file = Path('output/roster_players.json')
     if not json_file.exists():
         print(f"File not found: {json_file}")
@@ -82,8 +82,25 @@ def import_roster_players(conn, cur):
     with open(json_file, 'r', encoding='utf-8') as f:
         players = json.load(f)
     
-    # Clear existing data
-    cur.execute("DELETE FROM roster_players")
+    # Identify teams present in new data
+    new_teams = set()
+    for player in players:
+        team_id = get_team_id(cur, player.get('team', ''))
+        if team_id:
+            new_teams.add(team_id)
+    
+    # Delete existing data ONLY for teams in the new screenshot batch
+    # CASCADE will automatically delete contracts for these players
+    if new_teams:
+        cur.execute(
+            "DELETE FROM roster_players WHERE team_id = ANY(%s)",
+            (list(new_teams),)
+        )
+        cur.execute("SELECT team_name FROM teams WHERE team_id = ANY(%s)", (list(new_teams),))
+        team_names = [row[0] for row in cur.fetchall()]
+        print(f"✓ Cleared roster data for {len(new_teams)} team(s): {', '.join(team_names)}")
+    else:
+        print("⚠ No valid teams found in new data")
     
     imported = 0
     skipped = 0
@@ -121,7 +138,11 @@ def import_roster_players(conn, cur):
     print(f"✓ Imported {imported} players (skipped {skipped})")
 
 def import_contracts(conn, cur):
-    """Import contracts linked to players via UUID"""
+    """Import contracts linked to players via UUID
+    
+    Note: Contracts are automatically deleted when roster_players are deleted (CASCADE),
+    so we don't need separate deletion logic. Just insert contracts for existing players.
+    """
     json_file = Path('output/contracts.json')
     if not json_file.exists():
         print(f"File not found: {json_file}")
@@ -131,9 +152,6 @@ def import_contracts(conn, cur):
     
     with open(json_file, 'r', encoding='utf-8') as f:
         contracts = json.load(f)
-    
-    # Clear existing data
-    cur.execute("DELETE FROM contracts")
     
     imported = 0
     skipped = 0
@@ -192,7 +210,7 @@ def import_contracts(conn, cur):
     print(f"✓ Imported {imported} contracts (skipped {skipped})")
 
 def import_draft_picks(conn, cur):
-    """Import draft picks with team references"""
+    """Import draft picks with team references - replaces data only for teams in the new JSON"""
     json_file = Path('output/draft_picks.json')
     if not json_file.exists():
         print(f"File not found: {json_file}")
@@ -203,8 +221,24 @@ def import_draft_picks(conn, cur):
     with open(json_file, 'r', encoding='utf-8') as f:
         picks = json.load(f)
     
-    # Clear existing data
-    cur.execute("DELETE FROM draft_picks")
+    # Identify teams present in new data
+    new_teams = set()
+    for pick in picks:
+        team_id = get_team_id(cur, pick.get('team', ''))
+        if team_id:
+            new_teams.add(team_id)
+    
+    # Delete existing draft picks ONLY for teams in the new screenshot batch
+    if new_teams:
+        cur.execute(
+            "DELETE FROM draft_picks WHERE team_id = ANY(%s)",
+            (list(new_teams),)
+        )
+        cur.execute("SELECT team_name FROM teams WHERE team_id = ANY(%s)", (list(new_teams),))
+        team_names = [row[0] for row in cur.fetchall()]
+        print(f"✓ Cleared draft picks for {len(new_teams)} team(s): {', '.join(team_names)}")
+    else:
+        print("⚠ No valid teams found in new data")
     
     imported = 0
     skipped = 0
@@ -255,7 +289,7 @@ def import_draft_picks(conn, cur):
     print(f"✓ Imported {imported} draft picks (skipped {skipped})")
 
 def import_standings(conn, cur):
-    """Import standings with team references"""
+    """Import standings with team references - replaces data only for teams in the new JSON"""
     json_file = Path('output/standings.json')
     if not json_file.exists():
         print(f"File not found: {json_file}")
@@ -266,8 +300,24 @@ def import_standings(conn, cur):
     with open(json_file, 'r', encoding='utf-8') as f:
         standings = json.load(f)
     
-    # Clear existing data
-    cur.execute("DELETE FROM standings")
+    # Identify teams present in new data
+    new_teams = set()
+    for standing in standings:
+        team_id = get_team_id(cur, standing.get('team', ''))
+        if team_id:
+            new_teams.add(team_id)
+    
+    # Delete existing standings ONLY for teams in the new screenshot batch
+    if new_teams:
+        cur.execute(
+            "DELETE FROM standings WHERE team_id = ANY(%s)",
+            (list(new_teams),)
+        )
+        cur.execute("SELECT team_name FROM teams WHERE team_id = ANY(%s)", (list(new_teams),))
+        team_names = [row[0] for row in cur.fetchall()]
+        print(f"✓ Cleared standings for {len(new_teams)} team(s): {', '.join(team_names)}")
+    else:
+        print("⚠ No valid teams found in new data")
     
     imported = 0
     skipped = 0
@@ -329,7 +379,7 @@ def main():
         import_draft_picks(conn, cur)
         import_standings(conn, cur)
         
-        # Show final counts
+        # Show final counts and team coverage
         print("\n" + "=" * 60)
         print("Import Summary:")
         print("=" * 60)
@@ -346,7 +396,34 @@ def main():
         cur.execute("SELECT COUNT(*) FROM standings")
         print(f"Standings: {cur.fetchone()[0]}")
         
+        # Show team coverage
+        print("\n" + "=" * 60)
+        print("Team Coverage:")
+        print("=" * 60)
+        
+        # Teams with roster data
+        cur.execute("""
+            SELECT DISTINCT t.team_name 
+            FROM teams t 
+            INNER JOIN roster_players rp ON t.team_id = rp.team_id 
+            ORDER BY t.team_name
+        """)
+        teams_with_data = [row[0] for row in cur.fetchall()]
+        print(f"Teams in database: {len(teams_with_data)} of 30")
+        
+        if len(teams_with_data) < 30:
+            # Show missing teams
+            cur.execute("""
+                SELECT team_name FROM teams 
+                WHERE team_id NOT IN (SELECT DISTINCT team_id FROM roster_players)
+                ORDER BY team_name
+            """)
+            missing_teams = [row[0] for row in cur.fetchall()]
+            if missing_teams:
+                print(f"Teams missing roster data: {', '.join(missing_teams)}")
+        
         print("\n✓ Import completed successfully!")
+        print("✓ Per-team replacement: Only teams in new screenshots were updated")
         
     except Exception as e:
         print(f"\n✗ Error during import: {e}")
