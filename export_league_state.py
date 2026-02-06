@@ -202,7 +202,7 @@ def main():
     try:
         files = export_league_state()
         
-        print(f"✓ League state exported to {len(files)} files:")
+        print(f"[OK] League state exported to {len(files)} files:")
         print()
         for f in files:
             size = f.stat().st_size
@@ -240,7 +240,7 @@ def main():
         print("=" * 60)
         
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"[ERROR] {e}")
         import traceback
         traceback.print_exc()
         return 1

@@ -5,14 +5,15 @@ A modern desktop UI for managing your MyLeague data
 """
 
 import sys
+import subprocess
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QTableWidget, QTableWidgetItem, QLabel, QPushButton,
     QComboBox, QLineEdit, QStatusBar, QMessageBox, QHeaderView,
-    QMenu, QMenuBar, QFileDialog, QGroupBox, QSplitter
+    QMenu, QMenuBar, QFileDialog, QGroupBox, QSplitter, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QAction, QIcon, QFont, QColor
 
 import db_config
@@ -579,24 +580,116 @@ class LeagueManagerApp(QMainWindow):
     def import_data(self):
         """Run import from JSON files"""
         reply = QMessageBox.question(self, "Import Data",
-                                     "Run import_to_database_v2.py?\n\nThis will import all JSON files from output/ directory.",
+                                     "Import all JSON files from output/ directory to database?\n\nThis will update the database with new data.",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         
         if reply == QMessageBox.StandardButton.Yes:
-            # TODO: Run import script in subprocess
-            QMessageBox.information(self, "Import", 
-                                   "Please run: python import_to_database_v2.py\n\nThen click Refresh.")
+            try:
+                self.statusBar.showMessage("Importing data...")
+                
+                # Get Python executable path from virtual environment
+                python_exe = Path(sys.executable)
+                script_path = Path(__file__).parent / "import_to_database_v2.py"
+                
+                # Run import script
+                result = subprocess.run(
+                    [str(python_exe), str(script_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if result.returncode == 0:
+                    QMessageBox.information(self, "Import Successful",
+                                          f"Data imported successfully!\n\n{result.stdout}")
+                    self.statusBar.showMessage("Import completed successfully")
+                    # Auto-refresh after import
+                    QTimer.singleShot(500, self.refresh_data)
+                else:
+                    QMessageBox.warning(self, "Import Failed",
+                                      f"Import failed with error:\n\n{result.stderr}")
+                    self.statusBar.showMessage("Import failed")
+                    
+            except subprocess.TimeoutExpired:
+                QMessageBox.warning(self, "Timeout", "Import took too long and was cancelled.")
+                self.statusBar.showMessage("Import timeout")
+            except FileNotFoundError:
+                QMessageBox.critical(self, "Error", 
+                                   f"Could not find import_to_database_v2.py\n\nExpected location: {script_path}")
+                self.statusBar.showMessage("Import script not found")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to run import:\n\n{str(e)}")
+                self.statusBar.showMessage("Import error")
             
     def export_data(self):
         """Export league state for ChatGPT"""
         reply = QMessageBox.question(self, "Export Data",
-                                     "Run export_league_state.py?\n\nThis will generate text files in league_exports/.",
+                                     "Export league data for ChatGPT?\n\nThis will generate 4 text files in league_exports/ directory.",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         
         if reply == QMessageBox.StandardButton.Yes:
-            # TODO: Run export script in subprocess
-            QMessageBox.information(self, "Export",
-                                   "Please run: python export_league_state.py\n\nFiles will be in league_exports/")
+            try:
+                self.statusBar.showMessage("Exporting league data...")
+                
+                # Get Python executable path from virtual environment
+                python_exe = Path(sys.executable)
+                script_path = Path(__file__).parent / "export_league_state.py"
+                
+                # Run export script
+                result = subprocess.run(
+                    [str(python_exe), str(script_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode == 0:
+                    export_dir = Path(__file__).parent / "league_exports"
+                    files_msg = "\n".join([
+                        "- 1_standings.txt",
+                        "- 2_salary_cap.txt",
+                        "- 3_rosters.txt",
+                        "- 4_draft_picks.txt"
+                    ])
+                    
+                    msg = QMessageBox()
+                    msg.setIcon(QMessageBox.Icon.Information)
+                    msg.setWindowTitle("Export Successful")
+                    msg.setText("League data exported successfully!")
+                    msg.setDetailedText(result.stdout)
+                    msg.setInformativeText(f"Files created in league_exports/:\n\n{files_msg}")
+                    
+                    # Add button to open folder
+                    open_btn = msg.addButton("Open Folder", QMessageBox.ButtonRole.ActionRole)
+                    msg.addButton(QMessageBox.StandardButton.Ok)
+                    
+                    msg.exec()
+                    
+                    if msg.clickedButton() == open_btn:
+                        # Open export directory in file explorer
+                        if sys.platform == 'win32':
+                            subprocess.run(['explorer', str(export_dir)])
+                        elif sys.platform == 'darwin':
+                            subprocess.run(['open', str(export_dir)])
+                        else:
+                            subprocess.run(['xdg-open', str(export_dir)])
+                    
+                    self.statusBar.showMessage("Export completed successfully")
+                else:
+                    QMessageBox.warning(self, "Export Failed",
+                                      f"Export failed with error:\n\n{result.stderr}")
+                    self.statusBar.showMessage("Export failed")
+                    
+            except subprocess.TimeoutExpired:
+                QMessageBox.warning(self, "Timeout", "Export took too long and was cancelled.")
+                self.statusBar.showMessage("Export timeout")
+            except FileNotFoundError:
+                QMessageBox.critical(self, "Error", 
+                                   f"Could not find export_league_state.py\n\nExpected location: {script_path}")
+                self.statusBar.showMessage("Export script not found")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to run export:\n\n{str(e)}")
+                self.statusBar.showMessage("Export error")
             
     def export_team(self):
         """Export current team data"""
@@ -627,10 +720,10 @@ class LeagueManagerApp(QMainWindow):
         """Show edit data dialog"""
         QMessageBox.information(self, "Edit Data",
                                "Run editors from command line:\n\n"
-                               "• python edit_roster.py\n"
-                               "• python edit_contracts.py\n"
-                               "• python edit_draft_picks.py\n"
-                               "• python edit_standings.py")
+                               "- python edit_roster.py\n"
+                               "- python edit_contracts.py\n"
+                               "- python edit_draft_picks.py\n"
+                               "- python edit_standings.py")
         
     def show_about(self):
         """Show about dialog"""
@@ -638,9 +731,9 @@ class LeagueManagerApp(QMainWindow):
                          "NBA 2K26 League Manager\n\n"
                          "A desktop application for managing your MyLeague data.\n\n"
                          "Features:\n"
-                         "• View rosters, contracts, and draft picks\n"
-                         "• Track salary cap and standings\n"
-                         "• Export data for AI analysis\n\n"
+                         "- View rosters, contracts, and draft picks\n"
+                         "- Track salary cap and standings\n"
+                         "- Export data for AI analysis\n\n"
                          "Built with PyQt6 and PostgreSQL")
         
     def apply_style(self):
