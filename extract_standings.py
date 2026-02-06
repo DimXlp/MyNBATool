@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -31,6 +33,7 @@ INPUT_DIR = PROJECT_ROOT / "input_screenshots"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MANIFEST_PATH = OUTPUT_DIR / "manifest.json"
 DEBUG_DIR = OUTPUT_DIR / "debug_standings"
+ARCHIVE_DIR = PROJECT_ROOT / "archived_screenshots"
 
 # =========================
 # Helpers
@@ -53,6 +56,37 @@ def _load_manifest(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         raise FileNotFoundError(f"manifest.json not found at: {path.resolve()}")
     return json.loads(path.read_text(encoding="utf-8"))
+
+def _archive_processed_screenshots(processed_files: List[str], screenshot_type: str) -> int:
+    """Move processed screenshots to dated archive folder.
+    
+    Args:
+        processed_files: List of screenshot filenames that were processed
+        screenshot_type: Type of screenshot (e.g., 'draft_picks', 'roster', 'contracts', 'standings')
+    
+    Returns:
+        Number of files successfully archived
+    """
+    if not processed_files:
+        return 0
+    
+    # Create archive directory with today's date
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    archive_path = ARCHIVE_DIR / date_str / screenshot_type
+    archive_path.mkdir(parents=True, exist_ok=True)
+    
+    archived_count = 0
+    for filename in processed_files:
+        source = INPUT_DIR / filename
+        if source.exists():
+            destination = archive_path / filename
+            try:
+                shutil.move(str(source), str(destination))
+                archived_count += 1
+            except Exception as e:
+                print(f"Warning: Could not archive {filename}: {e}")
+    
+    return archived_count
 
 def _crop_roi_bgr(img_bgr: np.ndarray, roi: Tuple[int, int, int, int]) -> np.ndarray:
     x, y, w, h = roi
@@ -315,6 +349,13 @@ def main() -> None:
     print(f"Total screenshots processed: {processed}")
     if args.debug:
         print(f"Debug images saved in: {DEBUG_DIR.resolve()}")
+    
+    # Archive processed screenshots
+    processed_files = [entry.get("file") for entry in standings_entries if entry.get("file")]
+    if processed_files:
+        archived = _archive_processed_screenshots(processed_files, "standings")
+        if archived > 0:
+            print(f"Archived {archived} screenshot(s) to {ARCHIVE_DIR / datetime.now().strftime('%Y-%m-%d') / 'standings'}")
 
 if __name__ == "__main__":
     main()

@@ -4,6 +4,8 @@
 from __future__ import annotations
 import json
 import re
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -36,6 +38,7 @@ DRAFT_PICKS_FILE = OUTPUT_DIR / "draft_picks.json"
 TEAMS_DRAFT_DIR = OUTPUT_DIR / "teams_draft_picks"
 MANIFEST_PATH = OUTPUT_DIR / "manifest.json"
 DEBUG_DIR = OUTPUT_DIR / "debug_draft_picks"
+ARCHIVE_DIR = PROJECT_ROOT / "archived_screenshots"
 
 # NBA Teams for origin validation
 NBA_TEAMS = [
@@ -62,6 +65,37 @@ def _load_manifest(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     return json.loads(path.read_text(encoding="utf-8"))
+
+def _archive_processed_screenshots(processed_files: List[str], screenshot_type: str) -> int:
+    """Move processed screenshots to dated archive folder.
+    
+    Args:
+        processed_files: List of screenshot filenames that were processed
+        screenshot_type: Type of screenshot (e.g., 'draft_picks', 'roster', 'contracts', 'standings')
+    
+    Returns:
+        Number of files successfully archived
+    """
+    if not processed_files:
+        return 0
+    
+    # Create archive directory with today's date
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    archive_path = ARCHIVE_DIR / date_str / screenshot_type
+    archive_path.mkdir(parents=True, exist_ok=True)
+    
+    archived_count = 0
+    for filename in processed_files:
+        source = INPUT_DIR / filename
+        if source.exists():
+            destination = archive_path / filename
+            try:
+                shutil.move(str(source), str(destination))
+                archived_count += 1
+            except Exception as e:
+                print(f"Warning: Could not archive {filename}: {e}")
+    
+    return archived_count
 
 def _is_draft_picks_screen(img_bgr: np.ndarray) -> bool:
     """Check if screenshot is a Future Draft Picks screen by looking for header text."""
@@ -631,6 +665,13 @@ def main() -> None:
     
     if new_count > 0:
         MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        
+        # Archive processed screenshots
+        processed_files = [item["file"] for item in manifest if item.get("type") == "draft_picks" and item.get("processed")]
+        if processed_files:
+            archived = _archive_processed_screenshots(processed_files, "draft_picks")
+            if archived > 0:
+                print(f"Archived {archived} screenshot(s) to {ARCHIVE_DIR / datetime.now().strftime('%Y-%m-%d') / 'draft_picks'}")
     # else:
         # print("\nNo new draft picks screenshots to process.")
 
