@@ -3,6 +3,12 @@ numpy>=1.21.0
 opencv-python>=4.5.0
 pytesseract>=0.3.8
 
+# Database
+psycopg2-binary>=2.9.0
+
+# Desktop UI
+PyQt6>=6.6.0
+
 # Note: Tesseract OCR must be installed separately
 # Windows: https://github.com/UB-Mannheim/tesseract/wiki
 # macOS: brew install tesseract
