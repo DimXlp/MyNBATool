@@ -397,24 +397,24 @@ def main() -> None:
     
     for img_path in image_files:
         if img_path.name in processed_files:
-            print(f"> Skipping {img_path.name} (already processed)")
+            # print(f"> Skipping {img_path.name} (already processed)")
             continue
         
-        print(f"\n{'='*60}")
-        print(f"Processing: {img_path.name}")
-        print('='*60)
+        # print(f"\n{'='*60}")
+        # print(f"Processing: {img_path.name}")
+        # print('='*60)
         
         img_bgr = cv2.imread(str(img_path))
         if img_bgr is None:
-            print(f"  ! Cannot read image")
+            # print(f"  ! Cannot read image")
             continue
         
         if not _is_draft_picks_screen(img_bgr):
-            print(f"  > Not a draft picks screen")
+            # print(f"  > Not a draft picks screen")
             continue
         
         team_name = _extract_team_name(img_bgr)
-        print(f"  Team: {team_name}")
+        # print(f"  Team: {team_name}")
         
         # Extract each column
         year_col = _crop_roi_bgr(img_bgr, YEAR_COL_ROI)
@@ -437,8 +437,8 @@ def main() -> None:
         origin_bw = _preprocess_for_line_detection(origin_col)
         origin_lines = _find_text_lines(origin_bw)
         
-        print(f"  Found {len(year_lines)} draft pick lines in year column")
-        print(f"  Found {len(origin_lines)} text lines in origin column")
+        # print(f"  Found {len(year_lines)} draft pick lines in year column")
+        # print(f"  Found {len(origin_lines)} text lines in origin column")
         
         # Pre-scan round column to find where each round marker appears (Y position)
         round_gray = cv2.cvtColor(round_col, cv2.COLOR_BGR2GRAY)
@@ -462,7 +462,7 @@ def main() -> None:
             if round_val:
                 round_markers.append((y, round_val))
         
-        print(f"  Round markers found: {round_markers}")
+        # print(f"  Round markers found: {round_markers}")
         
         # Use round markers to determine which lines belong to which round
         def get_round_for_line(y_pos):
@@ -541,14 +541,14 @@ def main() -> None:
             # Debug: save origin lines that look wrong
             if year_text and ("swap" in protection_text.lower() or len(origin_text) < 4 or not any(c.isupper() for c in origin_text)):
                 cv2.imwrite(str(DEBUG_DIR / f"{img_path.stem}_origin_line{idx}_{year_text}_debug.png"), origin_bw)
-                print(f"    DEBUG: Saved origin line {idx} for year {year_text}: '{origin_text}' (PSM results: {origin_texts})")
+                # print(f"    DEBUG: Saved origin line {idx} for year {year_text}: '{origin_text}' (PSM results: {origin_texts})")
             
             # Debug: save problematic protection lines
             if "lottery" in protection_text.lower() or (year_text == "2028" and origin_text and "bull" in origin_text.lower()):
                 cv2.imwrite(str(DEBUG_DIR / f"{img_path.stem}_prot_line{idx}_debug.png"), protection_bw)
-                print(f"    DEBUG: Saved protection line {idx} (contains lottery or Bulls): '{protection_text}'")
+                # print(f"    DEBUG: Saved protection line {idx} (contains lottery or Bulls): '{protection_text}'")
             
-            print(f"    Line {idx} raw OCR: year='{year_text}' round='{round_text}' pick='{pick_text}' protection='{protection_text[:30]}' origin='{origin_text}'")
+            # print(f"    Line {idx} raw OCR: year='{year_text}' round='{round_text}' pick='{pick_text}' protection='{protection_text[:30]}' origin='{origin_text}'")
             
             # Normalize
             year = _normalize_year(year_text)
@@ -557,7 +557,7 @@ def main() -> None:
             protection = _normalize_protection(protection_text)
             origin = _normalize_origin(origin_text)
             
-            print(f"    Line {idx} normalized: year={year} round={round_type} (from '{round_text}')")
+            # print(f"    Line {idx} normalized: year={year} round={round_type} (from '{round_text}')")
             
             # Skip header rows
             if year_text.upper() == "YEAR" or round_text.upper() == "ROUND":
@@ -600,7 +600,7 @@ def main() -> None:
                 picks_by_team[team_name] = []
             picks_by_team[team_name].append(pick_record)
             
-            print(f"    {idx}. {year} {round_type} - Origin: {origin or 'N/A'} - Protection: {protection or 'None'}")
+            # print(f"    {idx}. {year} {round_type} - Origin: {origin or 'N/A'} - Protection: {protection or 'None'}")
         
         # Update manifest
         manifest.append({
@@ -614,19 +614,25 @@ def main() -> None:
     # Save results
     if all_picks:
         DRAFT_PICKS_FILE.write_text(json.dumps(all_picks, indent=2), encoding="utf-8")
-        print(f"\n+ Saved {len(all_picks)} draft picks to {DRAFT_PICKS_FILE}")
+        
+        # Count unique teams
+        teams_processed = len(picks_by_team)
         
         # Save per-team files
         for team, picks in picks_by_team.items():
             team_file = TEAMS_DRAFT_DIR / f"{team}.json"
             team_file.write_text(json.dumps(picks, indent=2), encoding="utf-8")
-            print(f"  + {team}: {len(picks)} picks -> {team_file}")
+        
+        # Print summary matching other extractors format
+        print(f"Total screenshots processed: {len(manifest)}")
+        print(f"Teams processed: {teams_processed}")
+        print(f"Total draft picks extracted: {len(all_picks)}")
+        print(f"Saved: {DRAFT_PICKS_FILE}")
     
     if new_count > 0:
         MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        print(f"\n+ Processed {new_count} new draft picks screenshots")
-    else:
-        print("\nNo new draft picks screenshots to process.")
+    # else:
+        # print("\nNo new draft picks screenshots to process.")
 
 if __name__ == "__main__":
     main()
