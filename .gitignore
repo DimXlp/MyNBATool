@@ -39,10 +39,14 @@ env/
 
 # Project-specific
 output/
+input/
 input_screenshots/*.png
 input_screenshots/*.jpg
 input_screenshots/*.jpeg
-debug_roster/
+archived_screenshots/
+league_exports/
+debug/
+debug_*/
 
 # Keep directory structure but ignore contents
 !input_screenshots/.gitkeep
@@ -51,3 +55,4 @@ debug_roster/
 # Backup files
 *_old.py
 *.bak
+*.log

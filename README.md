@@ -94,6 +94,12 @@ MyNBATool/
 │   ├── extract_draft_picks.py         # Extract future draft picks
 │   └── extract_standings.py           # Extract team standings
 │
+├── Editors (Manual Verification & Fixes)
+│   ├── edit_roster.py                # Fix roster OCR errors
+│   ├── edit_contracts.py             # Fix contract OCR errors
+│   ├── edit_draft_picks.py           # Fix draft pick OCR errors
+│   └── edit_standings.py             # Fix standings OCR errors
+│
 ├── Database
 │   ├── database/
 │   │   └── schema_v2.sql             # PostgreSQL schema with UUIDs
@@ -174,7 +180,52 @@ Saved: output\roster_players.json
 Archived 6 screenshot(s) to archived_screenshots/2026-02-06/roster
 ```
 
-#### 4. Import to Database
+#### 4. Verify and Fix OCR Errors (Optional but Recommended)
+
+OCR isn't perfect! Use interactive editors to review and correct any mistakes:
+
+**Edit Rosters**:
+```bash
+python edit_roster.py
+```
+- View all players by team
+- Fix name misspellings (e.g., "J. Brunscn" → "J. Brunson")
+- Correct positions, ages, ratings
+- Add missing players
+
+**Edit Contracts**:
+```bash
+python edit_contracts.py
+```
+- Review contract details by team
+- Fix salary amounts
+- Correct option types, signing status, extensions
+- Verify NTC (No-Trade Clause) flags
+
+**Edit Draft Picks**:
+```bash
+python edit_draft_picks.py
+```
+- Review draft pick inventory by team
+- Fix years, rounds, pick numbers
+- Correct protection clauses
+- Update origin teams
+
+**Edit Standings**:
+```bash
+python edit_standings.py
+```
+- Review conference standings
+- Fix team records (W-L)
+- Correct rankings
+- Update conference assignments
+
+All editors:
+- Interactive menu-driven interface
+- Save changes back to JSON
+- No database required (edits happen before import)
+
+#### 5. Import to Database
 ```bash
 python import_to_database_v2.py
 ```
@@ -191,7 +242,7 @@ Teams in database: 4 of 30
 ✓ Per-team replacement: Only teams in new screenshots were updated
 ```
 
-#### 5. Export for ChatGPT
+#### 6. Export for ChatGPT
 ```bash
 python export_league_state.py
 ```
