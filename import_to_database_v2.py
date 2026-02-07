@@ -7,9 +7,87 @@ import json
 from pathlib import Path
 import db_config
 import re
+from difflib import SequenceMatcher
+
+# OCR error corrections mapping
+OCR_CORRECTIONS = {
+    'itmberwolves': 'Timberwolves',
+    'timberwolved': 'Timberwolves',
+    'fimberwolves': 'Timberwolves',
+    'fimberwolved': 'Timberwolves',
+    'fimberwolvey': 'Timberwolves',
+    '6efrs': '76ers',
+    '760s': '76ers',
+    'bucks': 'Milwaukee Bucks',
+    'chppers': 'Clippers',
+    'clppers': 'Clippers',
+    'saazz': 'Jazz',
+    'jazz': 'Utah Jazz',
+    'deze': 'Jazz',
+    'daze': 'Jazz',
+    'grizzies': 'Grizzlies',
+    'griezies': 'Grizzlies',
+    'grizzlies': 'Memphis Grizzlies',
+    'wizeras': 'Wizards',
+    'wizards': 'Washington Wizards',
+    'wasriors': 'Warriors',
+    'warriors': 'Golden State Warriors',
+    'nucoes': 'Nuggets',
+    'nusoets': 'Nuggets',
+    'nugoets': 'Nuggets',
+    'nuggets': 'Denver Nuggets',
+    'patcans': 'Pelicans',
+    'peiicans': 'Pelicans',
+    'pelicans': 'New Orleans Pelicans',
+    'macc': 'Magic',
+    'macic': 'Magic',
+    'magic': 'Orlando Magic',
+    'haws': 'Hawks',
+    'hews': 'Hawks',
+    'hawks': 'Atlanta Hawks',
+    'cots': 'Celtics',
+    'cottcs': 'Celtics',
+    'celtics': 'Boston Celtics',
+    'peat': 'Heat',
+    'heat': 'Miami Heat',
+    'rockes': 'Rockets',
+    'rockets': 'Houston Rockets',
+    'aus': 'Bulls',
+    'euis': 'Bulls',
+    'euls': 'Bulls',
+    'euiis': 'Bulls',
+    'eulis': 'Bulls',
+    'bulls': 'Chicago Bulls',
+    'cates': 'Cavaliers',
+    'cavaliers': 'Cleveland Cavaliers',
+    'cattios': 'Raptors',
+    'aptors': 'Raptors',
+    'raptors': 'Toronto Raptors',
+    'wares': 'Wizards',
+    'res': '76ers',
+    # Prefixed versions (F/J/P prefix before team name)
+    'f nucoes': 'Nuggets',
+    'f patcans': 'Pelicans',
+    'j macic': 'Magic',
+    'p griezies': 'Grizzlies',
+    'j hews': 'Hawks',
+    'p macc': 'Magic',
+    'f cates': 'Cavaliers',
+    'j haws': 'Hawks',
+}
+
+def similarity_ratio(a, b):
+    """Calculate similarity ratio between two strings (0 to 1)"""
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def get_team_id(cur, team_name):
-    """Get team_id from teams table, matching various name formats"""
+    """Get team_id from teams table, matching various name formats with OCR error correction"""
+    if not team_name:
+        return None
+    
+    # Clean up team name - remove extra spaces
+    team_name = team_name.strip()
+    
     # Try exact match first
     cur.execute("SELECT team_id FROM teams WHERE team_name = %s", (team_name,))
     result = cur.fetchone()
@@ -22,6 +100,21 @@ def get_team_id(cur, team_name):
     if result:
         return result[0]
     
+    # Try OCR correction mapping (with normalized spacing)
+    normalized_name = ' '.join(team_name.lower().split())
+    corrected_name = OCR_CORRECTIONS.get(normalized_name)
+    if corrected_name:
+        # Try the corrected name
+        cur.execute("SELECT team_id FROM teams WHERE team_name = %s", (corrected_name,))
+        result = cur.fetchone()
+        if result:
+            return result[0]
+        # Try partial match with corrected name
+        cur.execute("SELECT team_id FROM teams WHERE team_name LIKE %s", (f'%{corrected_name}%',))
+        result = cur.fetchone()
+        if result:
+            return result[0]
+    
     # Try partial match (for names like "Lakers" vs "Los Angeles Lakers")
     cur.execute("SELECT team_id FROM teams WHERE team_name LIKE %s", (f'%{team_name}%',))
     result = cur.fetchone()
@@ -33,6 +126,29 @@ def get_team_id(cur, team_name):
     for row in cur.fetchall():
         if team_name in row[1] or row[1].split()[-1] == team_name.split()[-1]:
             return row[0]
+    
+    # Try fuzzy matching as last resort (similarity > 75%)
+    cur.execute("SELECT team_id, team_name FROM teams")
+    all_teams = cur.fetchall()
+    best_match = None
+    best_ratio = 0.75  # Minimum threshold
+    
+    for team_id, db_team_name in all_teams:
+        # Compare with full name
+        ratio = similarity_ratio(team_name, db_team_name)
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_match = team_id
+        
+        # Compare with nickname (last word)
+        nickname = db_team_name.split()[-1]
+        ratio = similarity_ratio(team_name, nickname)
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_match = team_id
+    
+    if best_match:
+        return best_match
     
     print(f"WARNING: Could not find team_id for '{team_name}' - skipping")
     return None
@@ -111,6 +227,10 @@ def import_roster_players(conn, cur):
             skipped += 1
             continue
         
+        # Get the correct team name from database
+        cur.execute("SELECT team_name FROM teams WHERE team_id = %s", (team_id,))
+        correct_team_name = cur.fetchone()[0]
+        
         # Insert with UUID auto-generation
         cur.execute("""
             INSERT INTO roster_players (
@@ -121,7 +241,7 @@ def import_roster_players(conn, cur):
         """, (
             player.get('name'),
             team_id,
-            player.get('team'),
+            correct_team_name,  # Use corrected name from database
             player.get('pos'),  # JSON uses 'pos'
             player.get('age'),
             player.get('ovr'),  # JSON uses 'ovr'
@@ -249,7 +369,15 @@ def import_draft_picks(conn, cur):
             skipped += 1
             continue
         
+        # Get the correct team name from database
+        cur.execute("SELECT team_name FROM teams WHERE team_id = %s", (team_id,))
+        correct_team_name = cur.fetchone()[0]
+        
         origin_team_id = get_team_id(cur, pick.get('origin', '')) if pick.get('origin') else None
+        correct_origin_name = None
+        if origin_team_id:
+            cur.execute("SELECT team_name FROM teams WHERE team_id = %s", (origin_team_id,))
+            correct_origin_name = cur.fetchone()[0]
         
         # Parse year to int
         try:
@@ -274,13 +402,13 @@ def import_draft_picks(conn, cur):
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             team_id,
-            pick.get('team'),
+            correct_team_name,  # Use corrected name from database
             year,
             round_num,
             pick.get('pick'),
             pick.get('protection'),
             origin_team_id,
-            pick.get('origin'),
+            correct_origin_name,  # Use corrected origin name from database
             pick.get('source')  # JSON uses 'source'
         ))
         imported += 1
@@ -328,6 +456,10 @@ def import_standings(conn, cur):
             skipped += 1
             continue
         
+        # Get the correct team name from database
+        cur.execute("SELECT team_name FROM teams WHERE team_id = %s", (team_id,))
+        correct_team_name = cur.fetchone()[0]
+        
         # Parse record to wins/losses
         record = standing.get('record', '')
         wins, losses = parse_record(record)
@@ -343,7 +475,7 @@ def import_standings(conn, cur):
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             team_id,
-            standing.get('team'),
+            correct_team_name,  # Use corrected name from database
             standing.get('conference'),
             standing.get('rank'),  # JSON uses 'rank'
             standing.get('power_rank'),
