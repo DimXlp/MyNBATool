@@ -519,6 +519,7 @@ def main() -> None:
         
         # Match each year line to the closest origin line
         for idx, (y0, y1) in enumerate(year_lines, 1):
+            print(f"  Processing pick {idx}/{len(year_lines)}...")
             # Expand line boundaries to ensure we capture all text
             y0_expanded = max(0, y0 - 12)
             y1_expanded = min(year_col.shape[0], y1 + 12)
@@ -650,7 +651,7 @@ def main() -> None:
         })
         new_count += 1
         picks_in_screenshot = len([p for p in all_picks if p.get("source") == img_path.name])
-        print(f" ✓ Found {picks_in_screenshot} draft picks")
+        print(f" ✓ Found {picks_in_screenshot} draft picks (Total: {len(all_picks)} picks extracted)")
     
     # Save results
     if all_picks:
