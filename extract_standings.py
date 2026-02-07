@@ -274,6 +274,10 @@ def main() -> None:
     unique_standings: Dict[str, Dict[str, Any]] = {}
     processed = 0
 
+    total_screenshots = len(standings_entries)
+    print(f"\nProcessing {total_screenshots} standings screenshot(s)...")
+    print("=" * 60)
+
     for entry in standings_entries:
         fname = entry.get("file")
         if not fname:
@@ -289,6 +293,7 @@ def main() -> None:
             print(f"WARNING: could not read image: {fname}")
             continue
         
+        print(f"[{processed + 1}/{total_screenshots}] Processing {fname}...", end="", flush=True)
         standings_data = _parse_standings_screen(img_bgr, fname, args)
         
         # Merge duplicates from overlapping screenshots
@@ -318,6 +323,8 @@ def main() -> None:
                 unique_standings[key] = merged
         
         processed += 1
+        teams_in_screenshot = len([t for t in standings_data if t.get("source") == fname])
+        print(f" ✓ Found {teams_in_screenshot} teams")
     
     # Convert to list and group by conference
     all_standings_list = list(unique_standings.values())
@@ -335,6 +342,9 @@ def main() -> None:
     # Combine with Eastern first, then Western
     all_standings = eastern_teams + western_teams
     
+    print("=" * 60)
+    print(f"\nCompleted processing {processed} screenshot(s)\n")
+
     # Save standings data
     if all_standings:
         (OUTPUT_DIR / "standings.json").write_text(
@@ -343,19 +353,27 @@ def main() -> None:
         )
         eastern_count = len([t for t in all_standings if t["conference"] == "Eastern"])
         western_count = len([t for t in all_standings if t["conference"] == "Western"])
-        print(f"Standings teams extracted: {len(all_standings)} (Eastern: {eastern_count}, Western: {western_count})")
-        print(f"Saved: {OUTPUT_DIR / 'standings.json'}")
-    
-    print(f"Total screenshots processed: {processed}")
-    if args.debug:
-        print(f"Debug images saved in: {DEBUG_DIR.resolve()}")
+        
+        print("\n" + "=" * 60)
+        print("EXTRACTION SUMMARY")
+        print("=" * 60)
+        print(f"Screenshots processed:  {processed}")
+        print(f"Teams found:            {len(all_standings)}")
+        print(f"  Eastern Conference:   {eastern_count}")
+        print(f"  Western Conference:   {western_count}")
+        print(f"\nFiles saved:")
+        print(f"  • {OUTPUT_DIR / 'standings.json'}")
+        if args.debug:
+            print(f"\nDebug images: {DEBUG_DIR.resolve()}")
     
     # Archive processed screenshots
     processed_files = [entry.get("file") for entry in standings_entries if entry.get("file")]
     if processed_files:
         archived = _archive_processed_screenshots(processed_files, "standings")
         if archived > 0:
-            print(f"Archived {archived} screenshot(s) to {ARCHIVE_DIR / datetime.now().strftime('%Y-%m-%d') / 'standings'}")
+            print(f"\n✓ Archived {archived} screenshot(s) to {ARCHIVE_DIR / datetime.now().strftime('%Y-%m-%d') / 'standings'}")
+    
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()

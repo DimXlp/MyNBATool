@@ -428,6 +428,11 @@ def main() -> None:
     picks_by_team: Dict[str, List[Dict[str, Any]]] = {}
     
     new_count = 0
+    unprocessed_images = [img for img in image_files if img.name not in processed_files]
+    
+    if unprocessed_images:
+        print(f"\nProcessing {len(unprocessed_images)} draft picks screenshot(s)...")
+        print("=" * 60)
     
     for img_path in image_files:
         if img_path.name in processed_files:
@@ -644,6 +649,8 @@ def main() -> None:
             "processed": True,
         })
         new_count += 1
+        picks_in_screenshot = len([p for p in all_picks if p.get("source") == img_path.name])
+        print(f" ✓ Found {picks_in_screenshot} draft picks")
     
     # Save results
     if all_picks:
@@ -657,21 +664,32 @@ def main() -> None:
             team_file = TEAMS_DRAFT_DIR / f"{team}.json"
             team_file.write_text(json.dumps(picks, indent=2), encoding="utf-8")
         
+        if new_count > 0:
+            print("=" * 60)
+            print(f"\nCompleted processing {new_count} screenshot(s)\n")
+        
         # Print summary matching other extractors format
-        print(f"Total screenshots processed: {len(manifest)}")
-        print(f"Teams processed: {teams_processed}")
-        print(f"Total draft picks extracted: {len(all_picks)}")
-        print(f"Saved: {DRAFT_PICKS_FILE}")
+        print("\n" + "=" * 60)
+        print("EXTRACTION SUMMARY")
+        print("=" * 60)
+        print(f"Screenshots processed:  {new_count}")
+        print(f"Teams found:            {teams_processed}")
+        print(f"Draft picks extracted:  {len(all_picks)}")
+        print(f"\nFiles saved:")
+        print(f"  • {DRAFT_PICKS_FILE}")
+        print(f"  • {TEAMS_DRAFT_DIR}/ (team-specific files)")
     
     if new_count > 0:
         MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         
         # Archive processed screenshots
-        processed_files = [item["file"] for item in manifest if item.get("type") == "draft_picks" and item.get("processed")]
-        if processed_files:
-            archived = _archive_processed_screenshots(processed_files, "draft_picks")
+        processed_files_to_archive = [item["file"] for item in manifest if item.get("type") == "draft_picks" and item.get("processed")]
+        if processed_files_to_archive:
+            archived = _archive_processed_screenshots(processed_files_to_archive, "draft_picks")
             if archived > 0:
-                print(f"Archived {archived} screenshot(s) to {ARCHIVE_DIR / datetime.now().strftime('%Y-%m-%d') / 'draft_picks'}")
+                print(f"\n✓ Archived {archived} screenshot(s) to {ARCHIVE_DIR / datetime.now().strftime('%Y-%m-%d') / 'draft_picks'}")
+        
+        print("=" * 60)
     # else:
         # print("\nNo new draft picks screenshots to process.")
 

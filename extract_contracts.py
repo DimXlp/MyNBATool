@@ -558,6 +558,10 @@ def main() -> None:
     teams_data: Dict[str, List[Dict[str, Any]]] = {}
     processed = 0
 
+    total_screenshots = len(contract_entries)
+    print(f"\nProcessing {total_screenshots} contract screenshot(s)...")
+    print("=" * 60)
+
     # Process contract screenshots
     for entry in contract_entries:
         fname = entry.get("file")
@@ -576,6 +580,7 @@ def main() -> None:
         
         # Extract team name
         team_name = _extract_team_name(img_bgr)
+        print(f"[{processed + 1}/{total_screenshots}] Processing {fname} - {team_name}...", end="", flush=True)
 
         namecol = _crop_roi_bgr(img_bgr, NAME_COL_ROI)
         salarycol = _crop_roi_bgr(img_bgr, SALARY_COL_ROI)
@@ -710,6 +715,11 @@ def main() -> None:
                 unique_contracts[key] = merged
 
         processed += 1
+        contracts_in_screenshot = len([c for c in unique_contracts.values() if c.get("source") == fname])
+        print(f" ✓ Found {contracts_in_screenshot} contracts")
+
+    print("=" * 60)
+    print(f"\nCompleted processing {processed} screenshot(s)\n")
 
     contract_names = sorted([v["name"] for v in unique_names.values()], key=lambda s: s.lower())
     raw_out = [
@@ -750,22 +760,28 @@ def main() -> None:
     (OUTPUT_DIR / "contract_names.json").write_text(json.dumps(contract_names, indent=2), encoding="utf-8")
     (OUTPUT_DIR / "contract_names_raw.json").write_text(json.dumps(raw_out, indent=2), encoding="utf-8")
 
-    print(f"Total screenshots processed: {processed}")
-    print(f"Unique names extracted: {len(contract_names)}")
-    print(f"Teams processed: {len(teams_data)}")
-    print(f"Saved: {OUTPUT_DIR / 'contract_names.json'}")
-    print(f"Saved: {OUTPUT_DIR / 'contract_names_raw.json'}")
-    print(f"Saved: {OUTPUT_DIR / 'contracts.json'} (combined)")
-    print(f"Saved: {teams_dir} (team-specific files)")
+    print("\n" + "=" * 60)
+    print("EXTRACTION SUMMARY")
+    print("=" * 60)
+    print(f"Screenshots processed:  {processed}")
+    print(f"Unique contracts found: {len(unique_contracts)}")
+    print(f"Teams found:            {len(teams_data)}")
+    print(f"\nFiles saved:")
+    print(f"  • {OUTPUT_DIR / 'contract_names.json'}")
+    print(f"  • {OUTPUT_DIR / 'contract_names_raw.json'}")
+    print(f"  • {OUTPUT_DIR / 'contracts.json'}")
+    print(f"  • {teams_dir}/ (team-specific files)")
     if args.debug:
-        print(f"Debug images saved in: {DEBUG_DIR.resolve()}")
+        print(f"\nDebug images: {DEBUG_DIR.resolve()}")
     
     # Archive processed screenshots
     processed_files = [entry.get("file") for entry in contract_entries if entry.get("file")]
     if processed_files:
         archived = _archive_processed_screenshots(processed_files, "contracts")
         if archived > 0:
-            print(f"Archived {archived} screenshot(s) to {ARCHIVE_DIR / datetime.now().strftime('%Y-%m-%d') / 'contracts'}")
+            print(f"\n✓ Archived {archived} screenshot(s) to {ARCHIVE_DIR / datetime.now().strftime('%Y-%m-%d') / 'contracts'}")
+    
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()

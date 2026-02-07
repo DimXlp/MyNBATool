@@ -332,7 +332,7 @@ def _prep_name_for_ocr(line_bgr: np.ndarray) -> np.ndarray:
 
 def _ocr_try_name_configs(img_bw: np.ndarray) -> List[Tuple[str, float, str]]:
     results: List[Tuple[str, float, str]] = []
-    for psm in (7, 6, 11):
+    for psm in (7,):
         config = f"--oem 1 --psm {psm} -c tessedit_char_whitelist={NAME_WHITELIST}"
         data = pytesseract.image_to_data(img_bw, config=config, output_type=pytesseract.Output.DICT)
 
@@ -713,6 +713,10 @@ def main() -> None:
         return int(p.get("pos") is not None) + int(p.get("age") is not None) + int(p.get("ovr") is not None)
     
     # Process roster screenshots
+    total_screenshots = len(roster_entries)
+    print(f"\nProcessing {total_screenshots} roster screenshot(s)...")
+    print("=" * 60)
+    
     for entry in roster_entries:
         fname = entry.get("file")
         if not fname:
@@ -730,6 +734,7 @@ def main() -> None:
         
         # Extract team name from this screenshot
         team_name = _extract_team_name(img_bgr, fname)
+        print(f"[{processed + 1}/{total_screenshots}] Processing {fname} - {team_name}...", end="", flush=True)
 
         namecol = _crop_roi_bgr(img_bgr, NAME_COL_ROI)
         poscol = _crop_roi_bgr(img_bgr, POS_COL_ROI)
@@ -860,7 +865,12 @@ def main() -> None:
                 unique_players[key] = merged
 
         processed += 1
+        players_in_screenshot = len([p for p in unique_players.values() if p.get("source") == fname])
+        print(f" ✓ Found {players_in_screenshot} players")
 
+    print("=" * 60)
+    print(f"\nCompleted processing {processed} screenshot(s)\n")
+    
     roster_names = sorted([v["name"] for v in unique_names.values()], key=lambda s: s.lower())
     raw_out = [
         {"file": r.file, "y0": r.y0, "y1": r.y1, "text": r.text, "conf": round(r.conf, 2)}
@@ -901,22 +911,29 @@ def main() -> None:
     (OUTPUT_DIR / "roster_names.json").write_text(json.dumps(roster_names, indent=2), encoding="utf-8")
     (OUTPUT_DIR / "roster_names_raw.json").write_text(json.dumps(raw_out, indent=2), encoding="utf-8")
 
-    print(f"Total screenshots processed: {processed}")
-    print(f"Unique names extracted: {len(roster_names)}")
-    print(f"Teams processed: {len(teams_data)}")
-    print(f"Saved: {OUTPUT_DIR / 'roster_names.json'}")
-    print(f"Saved: {OUTPUT_DIR / 'roster_names_raw.json'}")
-    print(f"Saved: {OUTPUT_DIR / 'roster_players.json'} (combined)")
-    print(f"Saved: {teams_dir} (team-specific files)")
+    print("\n" + "=" * 60)
+    print("EXTRACTION SUMMARY")
+    print("=" * 60)
+    print(f"Screenshots processed:  {processed}")
+    print(f"Unique players found:   {len(unique_players)}")
+    print(f"Teams found:            {len(teams_data)}")
+    print(f"Total player entries:   {len(all_line_results)}")
+    print("\nFiles saved:")
+    print(f"  • {OUTPUT_DIR / 'roster_names.json'}")
+    print(f"  • {OUTPUT_DIR / 'roster_names_raw.json'}")
+    print(f"  • {OUTPUT_DIR / 'roster_players.json'}")
+    print(f"  • {teams_dir}/ (team-specific files)")
     if args.debug:
-        print(f"Debug images saved in: {DEBUG_DIR.resolve()}")
+        print(f"\nDebug images: {DEBUG_DIR.resolve()}")
     
     # Archive processed screenshots
     processed_files = [entry.get("file") for entry in roster_entries if entry.get("file")]
     if processed_files:
         archived = _archive_processed_screenshots(processed_files, "roster")
         if archived > 0:
-            print(f"Archived {archived} screenshot(s) to {ARCHIVE_DIR / datetime.now().strftime('%Y-%m-%d') / 'roster'}")
+            print(f"\n✓ Archived {archived} screenshot(s) to {ARCHIVE_DIR / datetime.now().strftime('%Y-%m-%d') / 'roster'}")
+    
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
