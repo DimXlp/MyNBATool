@@ -428,24 +428,8 @@ def import_standings(conn, cur):
     with open(json_file, 'r', encoding='utf-8') as f:
         standings = json.load(f)
     
-    # Identify teams present in new data
-    new_teams = set()
-    for standing in standings:
-        team_id = get_team_id(cur, standing.get('team', ''))
-        if team_id:
-            new_teams.add(team_id)
-    
-    # Delete existing standings ONLY for teams in the new screenshot batch
-    if new_teams:
-        cur.execute(
-            "DELETE FROM standings WHERE team_id = ANY(%s)",
-            (list(new_teams),)
-        )
-        cur.execute("SELECT team_name FROM teams WHERE team_id = ANY(%s)", (list(new_teams),))
-        team_names = [row[0] for row in cur.fetchall()]
-        print(f"✓ Cleared standings for {len(new_teams)} team(s): {', '.join(team_names)}")
-    else:
-        print("⚠ No valid teams found in new data")
+    # Use the default season from schema
+    current_season = '2025-26'
     
     imported = 0
     skipped = 0
@@ -471,8 +455,18 @@ def import_standings(conn, cur):
         cur.execute("""
             INSERT INTO standings (
                 team_id, team, conference, conference_rank,
-                power_rank, wins, losses, source_filename
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                power_rank, wins, losses, source_filename, season
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (team_id, season) 
+            DO UPDATE SET
+                team = EXCLUDED.team,
+                conference = EXCLUDED.conference,
+                conference_rank = EXCLUDED.conference_rank,
+                power_rank = EXCLUDED.power_rank,
+                wins = EXCLUDED.wins,
+                losses = EXCLUDED.losses,
+                source_filename = EXCLUDED.source_filename,
+                extracted_at = CURRENT_TIMESTAMP
         """, (
             team_id,
             correct_team_name,  # Use corrected name from database
@@ -481,12 +475,13 @@ def import_standings(conn, cur):
             standing.get('power_rank'),
             wins,
             losses,
-            standing.get('source')  # JSON uses 'source'
+            standing.get('source'),  # JSON uses 'source'
+            current_season
         ))
         imported += 1
     
     conn.commit()
-    print(f"✓ Imported {imported} standings (skipped {skipped})")
+    print(f"✓ Imported/Updated {imported} standings for season {current_season} (skipped {skipped})")
 
 def main():
     """Main import workflow"""
